@@ -1,0 +1,14 @@
+path: food_dataset
+train: train/images
+val: val/images
+
+nc: 35
+names: ['Banh Flan', 'Banh beo', 'Banh bot loc', 'Banh can', 'Banh canh', 'Banh chung', 'Banh gio', 'Banh khot', 'Banh mi', 'Banh pia', 'Banh tet', 'Banh trang nuong', 'Banh uot', 'Banh xeo', 'Banh_Duc', 'Bun mam', 'Bun_Bo_Hue', 'Bun_Dau_mam_tom', 'Bun_Rieu', 'Bun_Thit_Nuong', 'Bun_ngan', 'Ca_Kho', 'Canh_chua', 'Cao_lau', 'Cha gio', 'Chao long', 'Com chien', 'Com tam', 'Goi cuon', 'Hu tieu', 'Mi quang', 'Nem chua', 'Pho', 'Sup_cua', 'Xoi xeo']
+
+
+roboflow:
+  workspace: 1-driver-4-wheels-team
+  project: ai-food-assistant
+  version: dataset
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/1-driver-4-wheels-team/ai-food-assistant/dataset/dataset
