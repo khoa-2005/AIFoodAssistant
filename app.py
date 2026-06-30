@@ -10,11 +10,12 @@ import streamlit.components.v1 as components
 from PIL import Image
 from ultralytics import YOLO
 
-from food_info import get_food_info
+from food_info import get_food_info, get_similar_calorie_foods
+
 
 
 # ─── CẤU HÌNH ─────────────────────────────────────────────────────────────────
-MODEL_PATH  = "best.pt"
+MODEL_PATH  = "bestv8s.pt"
 PAGE_TITLE  = "Food AI Assistant"
 TTS_VOICE   = "vi-VN-HoaiMyNeural"   # hoặc "vi-VN-NamMinhNeural"
 TTS_RATE    = "-5%"                   # âm = chậm hơn, dương = nhanh hơn
@@ -222,7 +223,7 @@ def load_model(model_path: str):
 
 
 def run_detection(model, image: Image.Image, conf: float):
-    results = model.predict(source=np.array(image), conf=conf, verbose=False)
+    results = model.predict(source=image, conf=conf, verbose=False)
     detections = []
     if results:
         result = results[0]
@@ -234,6 +235,7 @@ def run_detection(model, image: Image.Image, conf: float):
             })
     annotated = results[0].plot() if results else None
     return detections, annotated
+
 
 
 def dedup_detections(detections: list) -> list:
@@ -424,6 +426,38 @@ def render_one_food(det: dict):
             f"</div>",
             unsafe_allow_html=True,
         )
+
+    # Gợi ý món ăn có lượng calo tương đương
+    similar_cal_foods = get_similar_calorie_foods(det["class_name"])
+    if similar_cal_foods:
+        st.markdown("<h4 style='color:#c2410c; margin-top:20px;'>🔥 Gợi ý món ăn có lượng calo tương đương</h4>", unsafe_allow_html=True)
+        cols = st.columns(len(similar_cal_foods))
+        for idx, item in enumerate(similar_cal_foods):
+            with cols[idx]:
+                diff = item["diff_signed"]
+                if diff > 0:
+                    diff_str = f"+{diff} kcal"
+                    color = "#ef4444"  # đỏ nếu nhiều calo hơn
+                elif diff < 0:
+                    diff_str = f"{diff} kcal"
+                    color = "#22c55e"  # xanh nếu ít calo hơn
+                else:
+                    diff_str = "Bằng calo"
+                    color = "#3b82f6"  # xanh biển nếu bằng nhau
+                
+                st.markdown(
+                    f"""
+                    <div style="background:white; padding:15px; border-radius:14px; border:1px solid #e2e8f0; box-shadow:0 4px 6px rgba(0,0,0,0.05); text-align:center;">
+                        <p style="font-weight:700; color:#1e293b; margin:0 0 5px 0; font-size:1.05rem;">{item['ten_hien_thi']}</p>
+                        <p style="color:#64748b; margin:0 0 5px 0; font-size:0.85rem;">{item['calo']}</p>
+                        <span style="background:{color}15; color:{color}; padding:4px 10px; border-radius:50px; font-weight:700; font-size:0.8rem; display:inline-block; border:1px solid {color}30;">
+                            {diff_str}
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
 
 
 def render_detections(detections: list, voice: str):

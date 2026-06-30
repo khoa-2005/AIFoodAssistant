@@ -588,3 +588,45 @@ def get_food_info(class_name: str) -> dict:
             "khuyen_nghi": "Không có khuyến nghị."
         },
     )
+
+
+def _extract_calories(calo_str: str) -> int:
+    import re
+    if not calo_str:
+        return 0
+    try:
+        match = re.search(r'\d+', calo_str)
+        if match:
+            return int(match.group())
+    except:
+        pass
+    return 0
+
+
+def get_similar_calorie_foods(current_class_name: str, limit: int = 3) -> list:
+    current_info = FOOD_INFO.get(current_class_name)
+    if not current_info or "calo" not in current_info:
+        return []
+    
+    current_cal = _extract_calories(current_info["calo"])
+    if current_cal == 0:
+        return []
+    
+    candidates = []
+    for name, info in FOOD_INFO.items():
+        if name == current_class_name:
+            continue
+        cal = _extract_calories(info.get("calo", ""))
+        if cal > 0:
+            diff = abs(current_cal - cal)
+            candidates.append({
+                "class_name": name,
+                "ten_hien_thi": info["ten_hien_thi"],
+                "calo": info["calo"],
+                "diff": diff,
+                "diff_signed": cal - current_cal
+            })
+            
+    candidates.sort(key=lambda x: x["diff"])
+    return candidates[:limit]
+
