@@ -6,3 +6,5 @@ torchvision
 torchaudio
 gTTS
 edge-tts
+google-generativeai
+transformers
