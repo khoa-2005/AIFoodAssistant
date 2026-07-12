@@ -1,10 +1,21 @@
-streamlit
+# ─── CORE FRAMEWORK & UI ──────────────────────────────────────
+streamlit>=1.30.0
+click>=8.4.2,<9.0.0
+
+# ─── AI MODELS & COMPUTER VISION ──────────────────────────────
 ultralytics
 Pillow
+numpy
+
+# ─── DEEP LEARNING FRAMEWORK (PYTORCH) ────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 torchaudio
-gTTS
-edge-tts
-google-generativeai
+
+# ─── NATURAL LANGUAGE PROCESSING & VISION-LANGUAGE (BLIP/GEMINI)
 transformers
+deep-translator
+google-genai
+# ─── TEXT TO SPEECH (TTS) ─────────────────────────────────────
+edge-tts
