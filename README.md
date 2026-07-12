@@ -31,11 +31,12 @@ Bước 2: Cài đặt thư viện
 pip install -r requirements.txt
 
 
-Bước 3: Tải mô hình AI (best.pt) đã có sẵn trên file gốc
+Bước 3: Sử dụng mô hình AI (bestv8s.pt) đã có sẵn trên file gốc
 
+Tạo file food_config.py với nội dung GEMINI_API_KEY ="api key của geminni"
 
 Bước 4: Chạy ứng dụng
-Bashstreamlit run app.py
+Bash streamlit run app.py
 
 
 📁 Cấu trúc thư mục
