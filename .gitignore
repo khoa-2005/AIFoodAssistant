@@ -6,3 +6,6 @@ best.pt
 *.zip
 .env
 .DS_Store
+
+venv/
+food_config_food.py
