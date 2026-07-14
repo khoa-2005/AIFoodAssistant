@@ -19,3 +19,5 @@ deep-translator
 google-genai
 # ─── TEXT TO SPEECH (TTS) ─────────────────────────────────────
 edge-tts
+
+scikit-learn

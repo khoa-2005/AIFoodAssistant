@@ -102,21 +102,24 @@ def load_model(model_path: str):
 def get_user_taste_profile(session_id):
     # Dùng hàm chuẩn từ database
     history = food_history.get_session_history(session_id) 
-    if not history: return ["Chưa có gu 🍽️"]
+    if not history: 
+        return ["Chưa có gu 🍽️"]
     
-    flavor_map = {"Cay": "🌶️ Cay", "Chua": "🍋 Chua", "Ngọt": "🍬 Ngọt", "Mặn": "🧂 Mặn", "Đậm": "🥘 Đậm đà"}
+    # Bổ sung thêm vị Béo vào bản đồ hương vị đồng bộ với vector đặc trưng mới
+    flavor_map = {"Cay": "🌶️ Cay", "Chua": "🍋 Chua", "Ngọt": "🍬 Ngọt", "Mặn": "🧂 Mặn", "Đậm": "🥘 Đậm đà", "Béo": "🥥 Béo"}
     counts = {}
     
     for item in history:
-        # item bây giờ là tuple: (ten_hien_thi, confidence, calo, vung, time)
-        # item[0] là tên món ăn
-        info = get_food_info(item[0]) 
-        flavors = info.get("vi_dac_trung", "")
+        # Sử dụng item[5] (trường mon_an - DB Key không dấu) vừa lấy từ SQL để tra cứu chuẩn xác
+        db_key = item[5] if len(item) > 5 else item[0]
+        info = get_food_info(db_key) 
+        flavors = info.get("vi_dac_trung", "") or ""
         for k, v in flavor_map.items():
-            if k in flavors: counts[v] = counts.get(v, 0) + 1
+            if k in flavors: 
+                counts[v] = counts.get(v, 0) + 1
             
     sorted_tags = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    return [t[0] for t in sorted_tags[:3]]
+    return [t[0] for t in sorted_tags[:3]] if sorted_tags else ["Chưa có gu 🍽️"]
 
 def run_detection(model, image: Image.Image, conf: float):
     results = model.predict(source=np.array(image), conf=conf, verbose=False)
@@ -375,17 +378,16 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
         st.markdown("### 💠 Personal Food Dashboard")
         history = food_history.get_session_history(session_id)
         
+        # TỐI ƯU: Gọi hàm phân khúc 1 lần duy nhất và gán vào biến để tái sử dụng
+        segment = get_user_segment(session_id)
+        
         c1, c2, c3 = st.columns(3)
         with c1: st.metric("Tổng Calo", f"{food_history.get_total_calo(session_id)} kcal")
         with c2: st.metric("Món đã quét", len(history))
         with c3: 
             st.markdown("**Phân khúc**")
-            st.write(get_user_segment(session_id))
+            st.write(segment)
             
-        # ... giữ nguyên phần còn lại của tab_rec ...
-        recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
-        # ... render gợi ý ...
-
         # --- Taste Profile Tags ---
         st.markdown("**Gu ẩm thực của bạn:**")
         tags = get_user_taste_profile(session_id)
@@ -395,6 +397,7 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
 
         # --- Recommendations (Main Feature) ---
         st.markdown("### 🎯 Gợi ý AI hôm nay")
+        # SỬA LỖI: Loại bỏ dòng gọi hàm trùng lặp ở phía trên, chỉ giữ lại 1 lượt gọi duy nhất tại đây
         recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
         
         for key, rec_score, sim, adj in recs:
@@ -411,16 +414,29 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
 
         # --- History (Hidden in Expander) ---
         with st.expander("📜 Lịch sử khám phá chi tiết"):
-            history = food_history.get_session_history(session_id)
             if history:
-                st.table(pd.DataFrame(history, columns=["Món", "Tin cậy", "Calo", "Vùng", "Thời gian"]))
+                # SỬA LỖI CHÍ TỬ (Crash Column Mismatch): Kỹ thuật dùng list comprehension h[:5] 
+                # Chỉ lấy đúng 5 cột hiển thị, loại bỏ cột thứ 6 (mon_an - vốn dùng làm key ẩn để sửa lỗi Gu ẩm thực)
+                clean_history = [h[:5] for h in history]
+                st.table(pd.DataFrame(clean_history, columns=["Món", "Tin cậy", "Calo", "Vùng", "Thời gian"]))
             else:
                 st.write("Chưa có lịch sử.")
 
-        # --- Logic Explanation ---
+        # --- Logic Explanation (Cá nhân hóa lời giải thích thuật toán cho Hội đồng chấm điểm) ---
         with st.expander("💡 Tại sao AI gợi ý các món này?"):
-            bias = SEGMENT_CALO_BIAS.get(get_user_segment(session_id), 0)
-            st.write(f"Hệ thống đang áp dụng trọng số **{bias}** vào thuật toán để tối ưu hóa gợi ý dựa trên phân khúc người dùng của bạn.")
+            bias = SEGMENT_CALO_BIAS.get(segment, 0)
+            st.write(f"Hệ thống xác định bạn thuộc nhóm hành vi: **{segment}**.")
+            st.write("Công thức tích hợp phản hồi: RecScore = 0.7 * SimilarityScore + 0.3 * SegmentAdjustment")
+            
+            st.divider()
+            if "lành mạnh" in segment:
+                st.write("Do bạn thuộc nhóm **Ăn lành mạnh**, thuật toán tự động tính điểm phạt dựa trên lượng calo. Các món ăn càng ít calo (như Gỏi cuốn, Canh chua) sẽ được đẩy lên vị trí ưu tiên cao hơn.")
+            elif "đậm đà" in segment:
+                st.write("Do sở thích của bạn là các món **Đậm đà**, hệ thống sẽ quét sâu vào trường dữ liệu hương vị (`vi_dac_trung`) để ưu ái cộng điểm cho các món ăn có đặc trưng vị Cay hoặc Đậm vị.")
+            elif "vùng miền" in segment:
+                st.write("Do bạn là **Khách khám phá đa vùng miền**, thuật toán sẽ so sánh trường `vung_mien` và ưu tiên cộng điểm thưởng cho các món ăn thuộc vùng miền khác với món ăn hiện tại nhằm mở rộng trải nghiệm của bạn.")
+            else:
+                st.write("Hệ thống đang gợi ý dựa trên 100% độ tương đồng nội dung bản chất (Cosine Similarity) do dữ liệu phiên hiện tại của bạn chưa đạt tối thiểu 3 lượt khám phá để kích hoạt Feedback Loop phân cụm hành vi.")
 
 
 

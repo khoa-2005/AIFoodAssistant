@@ -89,7 +89,7 @@ def get_session_history(session_id: str, db_path: str = DB_PATH) -> List[Tuple]:
     init_db(db_path)
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
-        "SELECT ten_hien_thi, confidence, calo_so, vung_mien, timestamp "
+        "SELECT ten_hien_thi, confidence, calo_so, vung_mien, timestamp, mon_an "
         "FROM history WHERE session_id = ? ORDER BY timestamp DESC",
         (session_id,),
     ).fetchall()
