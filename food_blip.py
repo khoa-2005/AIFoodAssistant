@@ -14,6 +14,7 @@ Model tải lần đầu ~900MB, lưu cache tại ~/.cache/huggingface/
 Chạy được trên CPU 8GB RAM, tự động dùng GPU nếu có NVIDIA.
 """
 
+import importlib
 import torch
 from PIL import Image
 
@@ -26,9 +27,11 @@ except ImportError:
     _TRANSFORMERS_OK = False
 
 try:
-    from deep_translator import GoogleTranslator
+    _deep_translator = importlib.import_module("deep_translator")
+    GoogleTranslator = _deep_translator.GoogleTranslator
     _TRANSLATOR_OK = True
 except ImportError:
+    GoogleTranslator = None
     _TRANSLATOR_OK = False
 
 # ── Global cache (load 1 lần, dùng nhiều lần) ────────────────────────────────
@@ -122,21 +125,9 @@ def generate_caption_from_image(
     translate: bool = True,
     max_new_tokens: int = 50,
 ) -> str:
-    """
-    Sinh caption mô tả những gì BLIP thấy trong ảnh crop.
-
-    Args:
-        cropped_img: ảnh PIL đã crop theo bbox từ YOLO
-        translate: True = dịch sang tiếng Việt, False = giữ tiếng Anh
-        max_new_tokens: độ dài caption tối đa
-
-    Returns:
-        Chuỗi mô tả ảnh (tiếng Việt nếu translate=True)
-    """
     processor, model = load_caption_model()
     device = _get_device()
 
-    # BLIP cần ảnh RGB
     if cropped_img.mode != "RGB":
         cropped_img = cropped_img.convert("RGB")
 
@@ -149,7 +140,9 @@ def generate_caption_from_image(
         generated_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            num_beams=4,
+            num_beams=5,             # Tăng nhẹ beam search để kết quả chính xác hơn
+            repetition_penalty=2.5,  # QUAN TRỌNG: Phạt nặng việc lặp từ
+            no_repeat_ngram_size=2   # QUAN TRỌNG: Không cho phép lặp cụm 2 từ
         )
 
     caption_en = processor.decode(generated_ids[0], skip_special_tokens=True).strip()

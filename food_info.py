@@ -4,7 +4,7 @@ Dữ liệu thông tin chi tiết cho 30 món ăn Việt Nam.
 Key phải khớp CHÍNH XÁC với tên class trong dataset.yaml (names).
 """
 
-FOOD_INFO = {
+FOOD_DB = {
     "Banh Flan": {
 "ten_hien_thi": "Bánh flan",
 "mo_ta": "Bánh trứng sữa mềm mịn phủ caramel, món tráng miệng phổ biến tại Việt Nam.",
@@ -565,7 +565,7 @@ FOOD_INFO = {
 
 
 def get_food_info(class_name: str) -> dict:
-    return FOOD_INFO.get(
+    return FOOD_DB.get(
         class_name,
         {
             "ten_hien_thi": class_name,
@@ -604,7 +604,7 @@ def _extract_calories(calo_str: str) -> int:
 
 
 def get_similar_calorie_foods(current_class_name: str, limit: int = 3) -> list:
-    current_info = FOOD_INFO.get(current_class_name)
+    current_info = FOOD_DB.get(current_class_name)
     if not current_info or "calo" not in current_info:
         return []
     
@@ -613,7 +613,7 @@ def get_similar_calorie_foods(current_class_name: str, limit: int = 3) -> list:
         return []
     
     candidates = []
-    for name, info in FOOD_INFO.items():
+    for name, info in FOOD_DB.items():
         if name == current_class_name:
             continue
         cal = _extract_calories(info.get("calo", ""))

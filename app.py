@@ -4,7 +4,7 @@ import io
 import time
 from pathlib import Path
 import sys
-
+from transformers import BlipProcessor, BlipForConditionalGeneration
 # ─── BỘ VÁ LỖI ĐỘNG (MONKEY PATCH) CHO WINDOWS ──────────────────────────────
 # Triệt tiêu im lặng lỗi WinError 10054 khi ngắt kết nối Sockets ngầm với server TTS
 if sys.platform == "win32":
@@ -27,6 +27,9 @@ import streamlit.components.v1 as components
 from PIL import Image
 from ultralytics import YOLO
 
+# Trong phần imports của app.py
+import food_history
+
 # Import các hàm xử lý ẩm thực nội bộ
 from food_info import get_food_info
 from food_reasoner import generate_caption, answer_question
@@ -36,9 +39,20 @@ from food_blip import (
     answer_question_from_image,
 )
 
+import pandas as pd
+import re
+from food_similarity import get_top_similar_foods
+from user_analytics import get_user_segment
+from food_history import save_detection # Thêm hàm lưu lịch sử
+
 # Cấu hình hằng số hệ thống
 MODEL_PATH  = "bestv8s.pt"
 PAGE_TITLE  = "Food AI Assistant"
+SEGMENT_CALO_BIAS = {
+    "🥗 Người ăn lành mạnh": 0.2,
+    "🌶️ Người thích ẩm thực đậm đà": 0.1,
+    "🗺️ Khách khám phá đa vùng miền": 0.05,
+}
 
 # Cấu hình thiết lập trang Streamlit
 st.set_page_config(
@@ -66,6 +80,10 @@ st.markdown("""
     .info-row { background: #f1f5f9; border-radius: 10px; padding: 9px 15px; margin: 5px 0; color: #334155; font-size: 0.91rem; line-height: 1.5; }
     .tts-section { background: linear-gradient(135deg, #fff7ed, #fef3c7); border: 2px solid #fb923c; border-radius: 16px; padding: 16px 20px; margin-top: 20px; }
     .tts-label { color: #9a3412; font-weight: 700; font-size: 0.9rem; margin-bottom: 8px; }
+    .dashboard-card { background: rgba(255, 255, 255, 0.9); padding: 20px; border-radius: 20px; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+    .tag-container { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .tag-chip { background: #f1f5f9; padding: 6px 14px; border-radius: 50px; font-size: 0.85rem; font-weight: 600; color: #334155; border: 1px solid #cbd5e1; }
+    .rec-card { background: white; padding: 15px; border-radius: 12px; border-left: 5px solid #f97316; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); color: #1e293b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -81,6 +99,24 @@ def load_model(model_path: str):
         return None
     return YOLO(model_path)
 
+def get_user_taste_profile(session_id):
+    # Dùng hàm chuẩn từ database
+    history = food_history.get_session_history(session_id) 
+    if not history: return ["Chưa có gu 🍽️"]
+    
+    flavor_map = {"Cay": "🌶️ Cay", "Chua": "🍋 Chua", "Ngọt": "🍬 Ngọt", "Mặn": "🧂 Mặn", "Đậm": "🥘 Đậm đà"}
+    counts = {}
+    
+    for item in history:
+        # item bây giờ là tuple: (ten_hien_thi, confidence, calo, vung, time)
+        # item[0] là tên món ăn
+        info = get_food_info(item[0]) 
+        flavors = info.get("vi_dac_trung", "")
+        for k, v in flavor_map.items():
+            if k in flavors: counts[v] = counts.get(v, 0) + 1
+            
+    sorted_tags = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    return [t[0] for t in sorted_tags[:3]]
 
 def run_detection(model, image: Image.Image, conf: float):
     results = model.predict(source=np.array(image), conf=conf, verbose=False)
@@ -243,9 +279,38 @@ def render_one_food(det: dict):
         for icon, label, value in rows[4:]:
             st.markdown(f"<div class='info-row'>{icon} <strong>{label}:</strong> {value}</div>", unsafe_allow_html=True)
 
+def get_recommendations(food_key: str, session_id: str, top_k: int = 3):
+    similar = get_top_similar_foods(food_key, top_k=5)
+    segment = get_user_segment(session_id)
+    
+    current_food_info = get_food_info(food_key)
+    current_region = current_food_info.get("vung_mien", "")
+
+    scored = []
+    for key, sim_score in similar:
+        info = get_food_info(key)
+        
+        m = re.search(r"\d+", info.get("calo", "0") or "0")
+        calo = int(m.group()) if m else 400
+        
+        A = 0.0
+        if segment == "🥗 Người ăn lành mạnh":
+            A = max(0.0, 1.0 - (calo / 800.0))
+        elif segment == "🌶️ Người thích ẩm thực đậm đà":
+            vi = info.get("vi_dac_trung", "")
+            if "Cay" in vi or "Đậm" in vi:
+                A = 1.0
+        elif segment == "🗺️ Khách khám phá đa vùng miền":
+            if info.get("vung_mien", "") != current_region:
+                A = 1.0
+
+        rec_score = 0.7 * sim_score + 0.3 * A
+        scored.append((key, rec_score, sim_score, A))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
 
 def render_detections(detections: list, voice: str, source_img: Image.Image = None, use_blip: bool = False, lang: str = "vi"):
-    """Điều phối kết quả phân bổ vào hệ thống 3 Tabs chức năng cố định tiếng Việt"""
     if not detections:
         st.error("❌ Không nhận diện được món ăn nào. Hãy thử ảnh rõ hơn!")
         return
@@ -253,17 +318,29 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
     sorted_dets = dedup_detections(detections)
     top_det     = sorted_dets[0]
     top_info    = get_food_info(top_det["class_name"])
+    session_id  = "demo_user" 
+
+    # --- LƯU LỊCH SỬ CHUẨN ---
+    if "history_saved_for" not in st.session_state:
+        st.session_state.history_saved_for = set()
+        
+    # Chỉ lưu khi món này là món mới so với phiên trước đó
+    if top_det["class_name"] not in st.session_state.history_saved_for:
+        food_history.save_detection(session_id, top_det, top_info)
+        st.session_state.history_saved_for.add(top_det["class_name"])
+        st.rerun() # <--- QUAN TRỌNG: Làm mới trang để Dashboard cập nhật ngay!
+    # -------------------------
 
     st.markdown(
         f"<div class='top-banner'>🎯 {top_info['ten_hien_thi']} — {top_det['confidence']*100:.1f}%</div>",
         unsafe_allow_html=True,
     )
 
-    # Đặt tên tab cố định tiếng Việt, tab hỏi đáp có thêm ghi chú nhỏ nếu chọn tiếng Anh
     qa_tab_title = "💬 Hỏi đáp (English Q&A)" if lang == "en" else "💬 Hỏi đáp"
-    tab_info, tab_qa, tab_ai = st.tabs(["📊 Thông tin món ăn", qa_tab_title, "🧠 Phân tích ảnh AI"])
+    tab_info, tab_qa, tab_ai, tab_rec = st.tabs(["📊 Thông tin món ăn", qa_tab_title, "🧠 Phân tích ảnh AI", "💡 Gợi ý AI"])
 
     with tab_info:
+        # Giữ nguyên code hiển thị thông tin cũ của bạn ở đây...
         for i, det in enumerate(sorted_dets):
             current_info = get_food_info(det["class_name"])
             if i == 0:
@@ -277,21 +354,11 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
         caption = generate_caption(top_det["class_name"], top_info, top_det["confidence"], lang)
         st.info(caption)
         
-        # Cấu hình nhãn tương tác chat linh hoạt theo ngôn ngữ
-        ask_lbl = "Ask a question about this dish (Đặt câu hỏi bằng Tiếng Anh)" if lang == "en" else "Đặt câu hỏi về món ăn"
-        spin_lbl = "🤖 AI Expert is processing your question..." if lang == "en" else "🤖 Hệ thống đang xử lý câu hỏi..."
-        
-        user_question = st.text_input(ask_lbl, key="food_question")
+        user_question = st.text_input("Đặt câu hỏi về món ăn", key="food_question")
         if user_question:
-            with st.spinner(spin_lbl):
+            with st.spinner("🤖 Hệ thống đang xử lý..."):
                 answer, source = answer_question(user_question, top_det["class_name"], top_info, top_det["confidence"], lang)
-            
-            if source == "AI":
-                prefix = "🧠 **AI Expert Answer:** {}" if lang == "en" else "🧠 **Chuyên gia AI (Gemini 2.5) trả lời:** {}"
-                st.success(prefix.format(answer))
-            else:
-                prefix = "📋 **System Data Answer:** {}" if lang == "en" else "📋 **Dữ liệu hệ thống (Local DB) trả lời:** {}"
-                st.info(prefix.format(answer))
+                st.success(f"🧠 **AI Expert:** {answer}")
 
     with tab_ai:
         if use_blip and source_img is not None and top_det.get("bbox"):
@@ -302,6 +369,59 @@ def render_detections(detections: list, voice: str, source_img: Image.Image = No
                     st.write(f"**AI Vision:** {blip_caption}")
                 except Exception as e:
                     st.warning(f"⚠️ BLIP-1 gặp lỗi: {e}")
+
+    with tab_rec:
+        # --- Đảm bảo hiển thị dữ liệu mới nhất từ session_state ---
+        st.markdown("### 💠 Personal Food Dashboard")
+        history = food_history.get_session_history(session_id)
+        
+        c1, c2, c3 = st.columns(3)
+        with c1: st.metric("Tổng Calo", f"{food_history.get_total_calo(session_id)} kcal")
+        with c2: st.metric("Món đã quét", len(history))
+        with c3: 
+            st.markdown("**Phân khúc**")
+            st.write(get_user_segment(session_id))
+            
+        # ... giữ nguyên phần còn lại của tab_rec ...
+        recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
+        # ... render gợi ý ...
+
+        # --- Taste Profile Tags ---
+        st.markdown("**Gu ẩm thực của bạn:**")
+        tags = get_user_taste_profile(session_id)
+        st.markdown(f"<div class='tag-container'>{''.join([f'<span class=\"tag-chip\">{t}</span>' for t in tags])}</div>", unsafe_allow_html=True)
+        
+        st.divider()
+
+        # --- Recommendations (Main Feature) ---
+        st.markdown("### 🎯 Gợi ý AI hôm nay")
+        recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
+        
+        for key, rec_score, sim, adj in recs:
+            info = get_food_info(key)
+            st.markdown(f"""
+            <div class='rec-card'>
+                <div style='display:flex; justify-content:space-between;'>
+                    <strong>{info['ten_hien_thi']}</strong>
+                    <span style='color:#f97316; font-weight:bold;'>{rec_score*100:.0f}% Match</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.progress(rec_score)
+
+        # --- History (Hidden in Expander) ---
+        with st.expander("📜 Lịch sử khám phá chi tiết"):
+            history = food_history.get_session_history(session_id)
+            if history:
+                st.table(pd.DataFrame(history, columns=["Món", "Tin cậy", "Calo", "Vùng", "Thời gian"]))
+            else:
+                st.write("Chưa có lịch sử.")
+
+        # --- Logic Explanation ---
+        with st.expander("💡 Tại sao AI gợi ý các món này?"):
+            bias = SEGMENT_CALO_BIAS.get(get_user_segment(session_id), 0)
+            st.write(f"Hệ thống đang áp dụng trọng số **{bias}** vào thuật toán để tối ưu hóa gợi ý dựa trên phân khúc người dùng của bạn.")
+
 
 
 def main():
