@@ -1,48 +1,63 @@
 """
 user_analytics.py
 ------------------
-K-Means phân tệp user + áp dụng ngược vào Recommendation (feedback loop).
-Đúng interface trong FOOD_AI_CONTEXT.md mục 6.4:
-    get_all_users_data()
-    cluster_users(n_clusters=3)
+K-Means phân tích HÀNH VI ĂN UỐNG của CHÍNH 1 người dùng + áp dụng ngược vào
+Recommendation (feedback loop).
+
+Interface public (app.py chỉ import get_user_segment, giữ nguyên chữ ký):
     get_user_segment(session_id)
     SEGMENT_NAMES, SEGMENT_CALO_BIAS
 
-Feature dùng cho K-Means — ĐÃ SỬA đúng theo ghi chú trong context file:
-    [AVG(calo_so), COUNT(*), COUNT(DISTINCT vung_mien)]
+Feature dùng cho K-Means:
+    Mỗi ĐIỂM DỮ LIỆU = 1 MÓN đã khám phá (không phải 1 user).
+    [calo_so, is_mien_bac, is_mien_trung, is_mien_nam] — one-hot vùng miền.
     KHÔNG dùng AVG(confidence) vì đó là chỉ số kỹ thuật của model YOLO,
     không phản ánh hành vi người dùng.
 
-2 FIX quan trọng so với bản pseudocode gốc (ghi rõ để đưa vào báo cáo P3
-mục "Chuẩn bị trả lời phản biện"):
+FIX QUAN TRỌNG (app cá nhân — 1 user duy nhất, session_id="demo_user" cố định
+trong app.py) so với bản pseudocode gốc trong FOOD_AI_CONTEXT.md mục 6.4:
 
-FIX 1 — Thứ tự nhãn cụm KMeans không cố định:
+    Bản gốc dùng `GROUP BY session_id` để coi MỖI SESSION là MỘT USER rồi
+    phân cụm giữa các "user" đó. Vì app.py hardcode session_id = "demo_user"
+    cho MỌI lượt dùng, GROUP BY session_id luôn trả về ĐÚNG 1 DÒNG dữ liệu
+    bất kể user đã quét bao nhiêu món -> len(data) < n_clusters luôn đúng
+    -> cluster_users() luôn trả về {} -> get_user_segment() luôn fallback
+    "Chưa đủ dữ liệu để phân tích", KỂ CẢ KHI user đã quét >100 món.
+    Đây là lỗi logic thật đang tồn tại trong code, không phải giả định.
+
+    -> Giải pháp: phân cụm trên CÁC MÓN đã khám phá của CHÍNH session đó
+    (WHERE session_id = ?, không GROUP BY session_id). Mỗi món là 1 điểm
+    dữ liệu, nên chỉ cần user quét >= 3 món là đã đủ chạy K-Means, và dữ
+    liệu không bao giờ lẫn giữa các user khác (nếu sau này app được mở rộng
+    nhiều session thật thì mỗi session chỉ nhìn thấy dữ liệu của chính nó).
+
+    Xu hướng ("segment") hiện tại của user được suy ra từ cụm chiếm đa số
+    trong N món GẦN NHẤT (mặc định 5) — để phản ánh khẩu vị GẦN ĐÂY, không
+    bị pha loãng bởi các món ăn từ rất lâu.
+
+FIX phụ — thứ tự nhãn cụm KMeans không cố định:
     sklearn.KMeans không đảm bảo cluster label 0 luôn là "ăn lành mạnh".
-    Mỗi lần fit lại, cụm "calo thấp nhất" có thể đổi từ label 0 sang label 1.
-    Nếu map cứng {0: "lành mạnh", 1: "đậm đà", 2: "khám phá"} như bản gốc,
-    tên phân khúc hiển thị cho user sẽ SAI/ĐỔI CHỖ giữa các lần chạy.
-    -> Giải pháp: sắp xếp lại nhãn cụm theo AVG(calo_so) của centroid,
-    tăng dần, rồi mới gán vào SEGMENT_NAMES. Đảm bảo cụm calo thấp nhất
-    luôn là "Người ăn lành mạnh" bất kể sklearn gán label gì.
+    -> Giải pháp: gán tên cụm theo AVG(calo_so) của centroid (thấp nhất =
+    lành mạnh, cao nhất = đậm đà, còn lại = khám phá đa vùng miền), không
+    hardcode theo index.
 
-FIX 2 — Chặn phân segment khi session mới chưa đủ lịch sử:
-    Bản gốc: get_user_segment() gán segment cho BẤT KỲ session nào miễn
-    tổng số session trong DB >= 3, kể cả session mới có 1 lượt khám phá.
-    Điều này sai với checklist kiểm thử P5 ("session mới -> chưa đủ dữ liệu",
-    "session >= 3 lần khám phá -> phân khúc đúng").
-    -> Giải pháp: kiểm tra get_session_detection_count(session_id) >= 3
-    trước khi gọi cluster_users().
+FIX phụ — chặn phân segment khi chưa đủ lịch sử:
+    Dùng get_session_detection_count(session_id) >= MIN_DETECTIONS_FOR_SEGMENT
+    trước khi chạy K-Means, khớp checklist kiểm thử P5.
 """
 
 import sqlite3
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from typing import Dict
+from typing import Dict, List, Tuple
 
 from food_history import DB_PATH, init_db, get_session_detection_count
 
-MIN_DETECTIONS_FOR_SEGMENT = 3  # khớp checklist "≥ 3 lần khám phá"
+MIN_DETECTIONS_FOR_SEGMENT = 3   # khớp checklist "≥ 3 lần khám phá"
+RECENT_WINDOW = 5                # số món gần nhất dùng để xác định segment hiện tại
+
+REGION_ORDER = ["Miền Bắc", "Miền Trung", "Miền Nam"]
 
 SEGMENT_NAMES = {
     "low_calo": "🥗 Người ăn lành mạnh",
@@ -57,80 +72,121 @@ SEGMENT_CALO_BIAS = {
 }
 
 
-def get_all_users_data(db_path: str = DB_PATH):
+def get_own_dish_records(session_id: str, db_path: str = DB_PATH) -> List[Tuple[int, str]]:
+    """
+    CHỈ lấy các món thuộc về CHÍNH session_id này (WHERE, không GROUP BY),
+    theo đúng thứ tự thời gian khám phá — dữ liệu của user khác (nếu có)
+    không bao giờ lọt vào đây.
+    """
     init_db(db_path)
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
         """
-        SELECT session_id, AVG(calo_so), COUNT(*), COUNT(DISTINCT vung_mien)
-        FROM history GROUP BY session_id
-        """
+        SELECT calo_so, vung_mien FROM history
+        WHERE session_id = ? ORDER BY timestamp ASC
+        """,
+        (session_id,),
     ).fetchall()
     conn.close()
     return rows
 
 
-def _assign_segment_names_by_centroid(kmeans: KMeans, scaler: StandardScaler) -> Dict[int, str]:
-    """
-    FIX 1 (Bản nâng cấp):
-    - Nhóm 'Khám phá' = Cụm có số vùng miền đa dạng nhất (index 2).
-    - 2 nhóm còn lại phân định 'Lành mạnh' (calo thấp) và 'Đậm đà' (calo cao) dựa vào AVG Calo (index 0).
-    """
-    centroids_unscaled = scaler.inverse_transform(kmeans.cluster_centers_)
+def _region_onehot(vung_mien: str) -> List[int]:
+    return [1 if vung_mien == r else 0 for r in REGION_ORDER]
 
-    # 1. Tìm nhãn của cụm có số vùng miền đa dạng nhất (Khám phá)
-    explorer_label = int(np.argmax(centroids_unscaled[:, 2]))
 
-    # 2. Lọc ra 2 nhãn còn lại
-    remaining_labels = [i for i in range(3) if i != explorer_label]
+def _assign_segment_names_by_centroid(centroids_unscaled: np.ndarray) -> Dict[int, str]:
+    """Gán tên cụm dựa trên Ý NGHĨA THẬT của centroid, không suy diễn mò:
+    - 'Khám phá đa vùng miền' = cụm mà thành viên trải đều nhiều vùng miền
+      nhất (đo bằng centroid vùng miền KHÔNG lệch hẳn về 1 giá trị onehot —
+      max onehot thấp nghĩa là món trong cụm này đến từ nhiều vùng khác nhau).
+    - Trong 2 cụm còn lại (vốn tập trung vào 1 vùng miền rõ rệt): calo thấp
+      hơn = 'lành mạnh', calo cao hơn = 'đậm đà'.
+    Không hardcode theo index, vì sklearn không đảm bảo thứ tự nhãn cố định
+    giữa các lần fit."""
+    n = centroids_unscaled.shape[0]
+    region_cols = centroids_unscaled[:, 1:]          # 3 cột one-hot vùng miền
+    region_spread = 1.0 - region_cols.max(axis=1)     # càng cao = càng đa vùng miền
 
-    # 3. So sánh calo (index 0) của 2 cụm còn lại để gán Lành mạnh / Đậm đà
-    label_a, label_b = remaining_labels
-    if centroids_unscaled[label_a, 0] < centroids_unscaled[label_b, 0]:
-        healthy_label, hearty_label = label_a, label_b
-    else:
-        healthy_label, hearty_label = label_b, label_a
+    if n < 3:
+        order_by_calo = np.argsort(centroids_unscaled[:, 0])
+        label_to_name = {int(order_by_calo[0]): SEGMENT_NAMES["low_calo"]}
+        if n == 2:
+            label_to_name[int(order_by_calo[-1])] = SEGMENT_NAMES["mid_calo"]
+        return label_to_name
 
-    label_to_name = {
+    explorer_label = int(np.argmax(region_spread))
+    remaining = [i for i in range(n) if i != explorer_label]
+    remaining.sort(key=lambda i: centroids_unscaled[i, 0])  # tăng dần theo calo
+    healthy_label, hearty_label = remaining[0], remaining[-1]
+
+    return {
         healthy_label: SEGMENT_NAMES["low_calo"],
         hearty_label: SEGMENT_NAMES["mid_calo"],
-        explorer_label: SEGMENT_NAMES["high_variety"]
+        explorer_label: SEGMENT_NAMES["high_variety"],
     }
-    return label_to_name
 
 
-def cluster_users(n_clusters: int = 3, db_path: str = DB_PATH) -> Dict[str, str]:
-    data = get_all_users_data(db_path)
-    if len(data) < n_clusters:
-        return {}
+from sklearn.metrics import silhouette_score
 
-    # Feature: [calo trung bình, số lần khám phá, số vùng miền đã thử]
-    X = np.array([[r[1] or 0, r[2] or 0, r[3] or 0] for r in data], dtype=float)
+def cluster_own_history(session_id: str, n_clusters: int = 3, db_path: str = DB_PATH):
+    records = get_own_dish_records(session_id, db_path)
+    if len(records) < n_clusters:
+        return None, None, {}, records, 0
+
+    X = np.array(
+        [[calo or 0] + _region_onehot(vm) for calo, vm in records], dtype=float
+    )
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
-    labels = kmeans.fit_predict(X_scaled)
+    # --- THÊM ĐOẠN TÍNH SILHOUETTE SCORE ĐỂ CHỨNG MINH K=3 LÀ TỐI ƯU ---
+    best_k = 2
+    best_score = -1
+    # Chỉ thử K từ 2 đến số lượng mẫu (tối đa 4 để tránh chạy lâu)
+    max_k_to_test = min(4, len(records) - 1) 
+    for k_test in range(2, max_k_to_test + 1):
+        try:
+            kmeans_test = KMeans(n_clusters=k_test, n_init=10, random_state=42).fit(X_scaled)
+            score = silhouette_score(X_scaled, kmeans_test.labels_)
+            if score > best_score:
+                best_score = score
+                best_k = k_test
+        except Exception:
+            continue
+    
+    # Dùng best_k tìm được để fit model chính thức
+    kmeans = KMeans(n_clusters=best_k, n_init=10, random_state=42)
+    kmeans.fit(X_scaled)
 
-    label_to_name = _assign_segment_names_by_centroid(kmeans, scaler)
-
-    return {
-        data[i][0]: label_to_name.get(int(labels[i]), "Người dùng thông thường")
-        for i in range(len(data))
-    }
+    centroids_unscaled = scaler.inverse_transform(kmeans.cluster_centers_)
+    label_to_name = _assign_segment_names_by_centroid(centroids_unscaled)
+    
+    # Trả về thêm best_score
+    return kmeans, scaler, label_to_name, records, best_score
 
 
 def get_user_segment(session_id: str, db_path: str = DB_PATH) -> str:
     """
-    FIX 2: chỉ gán segment nếu session này đã có >= MIN_DETECTIONS_FOR_SEGMENT
-    lượt khám phá. Nếu chưa đủ -> trả về thông báo rõ ràng cho Tab 3 UI,
-    RecScore ở nơi gọi nên fallback SegmentAdjustment = 0 trong trường hợp này.
+    Chỉ gán segment nếu CHÍNH session này đã có >= MIN_DETECTIONS_FOR_SEGMENT
+    lượt khám phá.
     """
     if get_session_detection_count(session_id, db_path) < MIN_DETECTIONS_FOR_SEGMENT:
         return "Chưa đủ dữ liệu để phân tích"
 
-    segments = cluster_users(db_path=db_path)
-    return segments.get(session_id, "Chưa đủ dữ liệu để phân tích")
+    # SỬA Ở ĐÂY: Thêm biến _ (hoặc sil_score) để nhận giá trị thứ 5
+    kmeans, scaler, label_to_name, records, _ = cluster_own_history(session_id, db_path=db_path)
+    if kmeans is None:
+        return "Chưa đủ dữ liệu để phân tích"
+
+    recent = records[-RECENT_WINDOW:] if len(records) >= RECENT_WINDOW else records
+    recent_X = np.array(
+        [[calo or 0] + _region_onehot(vm) for calo, vm in recent], dtype=float
+    )
+    avg_vec = recent_X.mean(axis=0, keepdims=True)
+    avg_scaled = scaler.transform(avg_vec)
+    nearest_label = int(kmeans.predict(avg_scaled)[0])
+    return label_to_name.get(nearest_label, "Người dùng thông thường")
 
 
 if __name__ == "__main__":

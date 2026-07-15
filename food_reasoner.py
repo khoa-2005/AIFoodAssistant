@@ -189,12 +189,11 @@ def answer_question(question: str, class_name: str, info: dict, confidence: floa
         # [Ý tưởng 4: Xử lý triệt để tính nhút nhát của Gemini thông qua Prompt Injection]
         # Kỹ thuật bọc câu hỏi nâng cao để ép AI sử dụng kiến thức mở rộng của nó khi Context thiếu thông tin
         system_injection = (
-            "\n\n[YÊU CẦU HỆ THỐNG DÀNH CHO AI]:\n"
-            "1. Hãy ưu tiên sử dụng thông tin món ăn được cung cấp trong Context để trả lời.\n"
-            "2. Nếu Context không đủ dữ liệu để trả lời câu hỏi mở rộng này (như lịch sử, nguồn gốc, cách nấu, so sánh...), "
-            "TUYỆT ĐỐI không được nói câu 'Thông tin không đề cập'. Hãy sử dụng kho tri thức mở rộng của bạn để giải thích chi tiết.\n"
-            "3. Khi sử dụng kiến thức mở rộng ngoài Context, bạn BẮT BUỘC phải tự động thêm dòng thông báo sau ở cuối câu trả lời:\n"
-            "'(Đây là kiến thức bổ sung từ AI, không có trong cơ sở dữ liệu nội bộ).'"
+            "\n\n[YÊU CẦU HỆ THỐNG DÀNH CHO AI - ĐÓNG VAI CHUYÊN GIA]:\n"
+            "1. Hãy đóng vai là một chuyên gia ẩm thực và dinh dưỡng người Việt Nam. Giọng điệu lịch sự, chuyên nghiệp nhưng thân thiện.\n"
+            "2. Ưu tiên sử dụng thông tin từ Context. Nếu Context thiếu, hãy dùng kiến thức mở rộng của bạn nhưng phải ghi chú rõ ở cuối.\n"
+            "3. Khi trả lời về calo hoặc dinh dưỡng, hãy đưa ra lời khuyên ngắn gọn kèm theo (vd: món này giàu đạm, nên ăn vào buổi trưa...).\n"
+            "4. TUYỆT ĐỐI KHÔNG bịa số liệu calo hoặc giá tiền nếu Context không có.\n"
         )
         
         enhanced_question = question + system_injection

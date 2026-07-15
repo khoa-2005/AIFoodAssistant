@@ -1,12 +1,10 @@
 import asyncio
-import concurrent.futures
 import io
 import time
 from pathlib import Path
 import sys
-from transformers import BlipProcessor, BlipForConditionalGeneration
+
 # ─── BỘ VÁ LỖI ĐỘNG (MONKEY PATCH) CHO WINDOWS ──────────────────────────────
-# Triệt tiêu im lặng lỗi WinError 10054 khi ngắt kết nối Sockets ngầm với server TTS
 if sys.platform == "win32":
     try:
         from asyncio.proactor_events import _ProactorBasePipeTransport
@@ -23,27 +21,19 @@ if sys.platform == "win32":
 import edge_tts
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image
 from ultralytics import YOLO
 
-# Trong phần imports của app.py
 import food_history
-
-# Import các hàm xử lý ẩm thực nội bộ
+import user_analytics
 from food_info import get_food_info
 from food_reasoner import generate_caption, answer_question
-from food_blip import (
-    is_available as blip_available,
-    generate_caption_from_image,
-    answer_question_from_image,
-)
+from food_similarity import get_top_similar_foods
+from food_history import save_detection
+from user_analytics import get_user_segment
 
 import pandas as pd
 import re
-from food_similarity import get_top_similar_foods
-from user_analytics import get_user_segment
-from food_history import save_detection # Thêm hàm lưu lịch sử
 
 # Cấu hình hằng số hệ thống
 MODEL_PATH  = "bestv8s.pt"
@@ -54,7 +44,6 @@ SEGMENT_CALO_BIAS = {
     "🗺️ Khách khám phá đa vùng miền": 0.05,
 }
 
-# Cấu hình thiết lập trang Streamlit
 st.set_page_config(
     page_title=PAGE_TITLE,
     page_icon="🍜",
@@ -62,62 +51,149 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Cấu hình phong cách CSS giao diện
+# ─── CẤU HÌNH CSS GIAO DIỆN TỐI ƯU ──────────────────────────────────────────
 st.markdown("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-    .main { background: linear-gradient(135deg, #f8fafc 0%, #fefce8 100%); }
-    .main-title { font-size: 3.4rem; font-weight: 900; background: linear-gradient(90deg, #f97316, #eab308); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-align: center; margin-bottom: 0.2rem; }
-    .subtitle { text-align: center; color: #475569; font-size: 1.2rem; font-weight: 500; margin-bottom: 1rem; }
-    .top-banner { background: linear-gradient(90deg, #dcfce7, #d1fae5); border: 2px solid #22c55e; border-radius: 14px; padding: 14px 22px; margin-bottom: 18px; font-weight: 700; color: #15803d; font-size: 1.05rem; }
-    .food-name { font-size: 2.2rem; font-weight: 800; color: #1e293b; margin: 0 0 8px 0; }
-    .conf-badge { background: linear-gradient(90deg, #22c55e, #86efac); color: white; padding: 7px 20px; border-radius: 50px; font-weight: 700; font-size: 0.95rem; box-shadow: 0 4px 12px rgba(34,197,94,0.3); display: inline-block; margin-bottom: 6px; }
-    .calo-box { background: linear-gradient(135deg, #fefce8, #fef3c7); border: 3px solid #fbbf24; border-radius: 18px; padding: 20px 24px; text-align: center; margin: 14px 0; }
-    .calo-label { color: #b45309; font-weight: 700; font-size: 0.9rem; margin: 0; }
-    .calo-value { font-size: 2.8rem; font-weight: 900; color: #c2410c; margin: 4px 0 0 0; }
-    .desc-box { background: #f8fafc; padding: 16px 20px; border-radius: 14px; border-left: 6px solid #f97316; color: #334155; margin: 8px 0 12px 0; font-size: 0.97rem; line-height: 1.6; }
+    :root{
+        --leaf:#1F3A2E; --leaf-2:#28483A; --paper:#FBF4E4; --paper-2:#F3E9D2;
+        --chili:#C5432E; --turmeric:#E3A438; --herb:#4F7A52;
+        --ink:#2A2118; --ink-soft:#6B5D4B; --line:#E4D9C0;
+    }
+    html, body, [class*="css"]  { font-family: 'Be Vietnam Pro', sans-serif; }
+
+    /* Nền tổng thể */
+    [data-testid="stAppViewContainer"], [data-testid="stMain"], .main { background: var(--leaf) !important; }
+    [data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stSidebar"] { background: var(--leaf-2) !important; border-right: 1px solid #3C5B4A; }
+    [data-testid="stSidebar"] * { color: var(--paper) !important; }
+    
+    /* Đổi màu chữ mặc định trên nền dark */
+    .stMarkdown, [data-testid="stMarkdownContainer"] p, label, .stCaption { color: var(--paper); }
+    [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color: var(--paper) !important; }
+
+    /* Card bọc container */
+    [data-testid="stVerticalBlockBorderWrapper"] { 
+        background: var(--leaf-2) !important; 
+        border: 1px solid #3C5B4A !important; 
+        border-radius: 14px !important; 
+        padding: 16px; 
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] h3, [data-testid="stVerticalBlockBorderWrapper"] p { color: var(--paper) !important; }
+
+    /* Tab */
+    button[data-baseweb="tab"] { color: #C9D8CC !important; font-weight: 600; }
+    button[data-baseweb="tab"][aria-selected="true"] { color: var(--turmeric) !important; }
+    [data-baseweb="tab-highlight"] { background-color: var(--turmeric) !important; }
+    [data-baseweb="tab-border"] { background-color: #3C5B4A !important; }
+
+    /* Định dạng thành phần Native của Streamlit */
+    .stButton > button {
+        background-color: var(--leaf-2); color: var(--paper) !important;
+        border: 1px solid var(--herb); border-radius: 8px; transition: all 0.2s;
+    }
+    .stButton > button:hover {
+        background-color: var(--herb); border-color: var(--turmeric); color: var(--paper) !important;
+    }
+    .stDownloadButton > button {
+        background-color: var(--turmeric); color: var(--ink) !important; border: none; border-radius: 8px;
+    }
+    [data-testid="stAlert"] {
+        background-color: var(--leaf-2) !important; border: 1px solid #3C5B4A !important;
+        border-left: 5px solid var(--turmeric) !important; color: var(--paper) !important;
+    }
+    [data-testid="stAlert"] p, [data-testid="stAlert"] svg { color: var(--paper) !important; fill: var(--paper) !important; }
+    
+    [data-testid="stProgress"] > div > div { background-color: var(--chili) !important; }
+    [data-testid="stProgress"] { background-color: var(--leaf-2) !important; border-radius: 50px; }
+
+    .stTextInput > div > div > input {
+        background-color: var(--leaf-2); color: var(--paper) !important;
+        border: 1px solid #3C5B4A; border-radius: 8px;
+    }
+    .stTextInput > div > div > input:focus { border-color: var(--turmeric); box-shadow: 0 0 0 1px var(--turmeric); }
+
+    [data-testid="stFileUploaderDropzone"] {
+        background-color: rgba(255,255,255,0.05); border: 2px dashed var(--herb); border-radius: 10px;
+    }
+    [data-testid="stFileUploaderDropzone"] p, [data-testid="stFileUploaderDropzone"] small, [data-testid="stFileUploaderDropzone"] svg { color: #C9D8CC !important; fill: #C9D8CC !important; }
+
+    /* Bảng dữ liệu History (HTML table) */
+    .history-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
+    .history-table th { background-color: var(--leaf-2); color: var(--turmeric); padding: 10px; text-align: left; border-bottom: 2px solid var(--herb); }
+    .history-table td { background-color: var(--paper-2); color: var(--ink); padding: 10px; border-bottom: 1px solid var(--line); }
+    .history-table tr:hover td { background-color: #E8F0E4; }
+
+    /* Typography & Custom Classes */
+    .main-title { font-size: 2.6rem; font-weight: 800; color: var(--paper); text-align: center; margin-bottom: 0.1rem; }
+    .subtitle { text-align: center; color: #C9D8CC; font-size: 1.05rem; font-weight: 500; margin-bottom: 1rem; }
+    .top-banner { background: var(--leaf-2); border: 1px solid #3C5B4A; border-radius: 14px; padding: 14px 22px; margin-bottom: 18px; font-weight: 700; color: var(--turmeric); font-size: 1.05rem; }
+
+    .food-name { font-size: 2.1rem; font-weight: 800; color: var(--paper); margin: 0 0 8px 0; }
+    .region-tag { display:inline-block; font-size: 0.78rem; font-weight:600; color: var(--herb); background:#E8F0E4; border:1px solid #CFE0CB; padding:3px 12px; border-radius:20px; margin-bottom:8px; }
+    .conf-badge { background: var(--chili); color: white; padding: 6px 18px; border-radius: 50px; font-weight: 700; font-size: 0.9rem; display: inline-block; margin-bottom: 6px; margin-left:8px; }
+
+    .calo-box { background: var(--leaf-2); border: none; border-radius: 14px; padding: 16px 22px; text-align: center; margin: 14px 0; }
+    .calo-label { color: #C9D8CC; font-weight: 700; font-size: 0.85rem; margin: 0; }
+    .calo-value { font-family:'JetBrains Mono', monospace; font-size: 2.2rem; font-weight: 700; color: var(--turmeric); margin: 4px 0 0 0; }
+
+    .desc-box { background: var(--paper-2); padding: 16px 20px; border-radius: 12px; border-left: 5px solid var(--chili); color: var(--ink); margin: 8px 0 12px 0; font-size: 0.97rem; line-height: 1.6; }
+
     .macro-row { display: flex; gap: 10px; margin: 10px 0 14px 0; flex-wrap: wrap; }
-    .macro-chip { background: #fff7ed; border: 1.5px solid #fdba74; border-radius: 12px; padding: 7px 15px; font-weight: 600; color: #9a3412; font-size: 0.88rem; }
-    .info-row { background: #f1f5f9; border-radius: 10px; padding: 9px 15px; margin: 5px 0; color: #334155; font-size: 0.91rem; line-height: 1.5; }
-    .tts-section { background: linear-gradient(135deg, #fff7ed, #fef3c7); border: 2px solid #fb923c; border-radius: 16px; padding: 16px 20px; margin-top: 20px; }
-    .tts-label { color: #9a3412; font-weight: 700; font-size: 0.9rem; margin-bottom: 8px; }
-    .dashboard-card { background: rgba(255, 255, 255, 0.9); padding: 20px; border-radius: 20px; border: 1px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+    .macro-chip { background: var(--leaf-2); border: none; border-radius: 10px; padding: 8px 15px; font-weight: 600; color: var(--paper); font-size: 0.85rem; text-align:center; min-width:80px; }
+    .macro-chip b { display:block; font-family:'JetBrains Mono', monospace; font-size:1.05rem; color: var(--turmeric); }
+
+    .flavor-tags { display:flex; gap:8px; flex-wrap:wrap; margin: 6px 0 4px 0; }
+    .ftag { font-size:0.8rem; font-weight:600; padding:5px 12px; border-radius:20px; border:1px solid var(--line); background:var(--paper-2); color:var(--ink); }
+
+    .info-row { background: var(--paper-2); border-radius: 10px; padding: 9px 15px; margin: 5px 0; color: var(--ink); font-size: 0.91rem; line-height: 1.5; }
+
+    .tts-section { background: var(--leaf-2); border: 1px solid #3C5B4A; border-radius: 14px; padding: 14px 18px; margin-top: 16px; }
+    .tts-label { color: var(--paper); font-weight: 700; font-size: 0.88rem; margin-bottom: 8px; }
+
+    .ticket { position:relative; background:var(--paper-2); border:1px solid var(--line); border-radius:6px; padding:14px 16px 16px; margin-bottom:10px; box-shadow:0 3px 8px rgba(0,0,0,0.2); }
+    .ticket-rank { font-family:'JetBrains Mono', monospace; font-size:0.72rem; color:var(--ink-soft); display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px dashed var(--line); padding-bottom:8px; }
+    .ticket-stamp { background: var(--chili); color:#fff; font-weight:700; font-size:0.78rem; padding:2px 10px; border-radius:20px; font-family:'JetBrains Mono', monospace; }
+    .ticket h4 { font-size:1.02rem; font-weight:700; margin:0 0 3px 0; color:var(--ink); }
+    .ticket .sub { font-size:0.78rem; color:var(--ink-soft); font-family:'JetBrains Mono', monospace; }
+
+    .suggest-chip-hint { font-size:0.78rem; color:#C9D8CC; margin-bottom:4px; }
+    .bubble-ai { background: var(--paper-2); border:1px solid var(--line); border-radius:14px; border-bottom-left-radius:3px; padding:12px 16px; margin:8px 0; color:var(--ink); font-size:0.93rem; line-height:1.55; }
+    .bubble-ai .src { display:inline-block; font-family:'JetBrains Mono', monospace; font-size:0.68rem; background:var(--herb); color:#fff; padding:2px 8px; border-radius:4px; margin-bottom:6px; }
+
+    .segment-card { display:flex; align-items:flex-start; gap:14px; background: var(--leaf-2); color: var(--paper); border-radius:12px; padding:18px 20px; margin-bottom:18px; border: 1px solid #3C5B4A; }
+    .segment-card .emoji { font-size:28px; }
+    .segment-card h3 { font-size:1.05rem; margin:0 0 4px 0; color: var(--paper); }
+    .segment-card p { font-size:0.85rem; color:#C9D8CC; line-height:1.5; margin:0; }
+    .segment-card .why { margin-top:8px; font-size:0.8rem; color: var(--turmeric); font-weight:600; }
     .tag-container { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .tag-chip { background: #f1f5f9; padding: 6px 14px; border-radius: 50px; font-size: 0.85rem; font-weight: 600; color: #334155; border: 1px solid #cbd5e1; }
-    .rec-card { background: white; padding: 15px; border-radius: 12px; border-left: 5px solid #f97316; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); color: #1e293b; }
+    .tag-chip { background: var(--paper-2); padding: 6px 14px; border-radius: 50px; font-size: 0.85rem; font-weight: 600; color: var(--ink); border: 1px solid var(--line); }
+    
+    [data-testid="stImage"] img { border-radius: 12px; max-height: 360px; object-fit: cover; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
-if "tts_audio_bytes" not in st.session_state:
-    st.session_state.tts_audio_bytes = None
-if "tts_food_key" not in st.session_state:
-    st.session_state.tts_food_key = None
-
+# ─── SESSION STATE & BACKEND FUNCTIONS ───────────────────────────────────────
+if "tts_audio_bytes" not in st.session_state: st.session_state.tts_audio_bytes = None
+if "tts_food_key" not in st.session_state: st.session_state.tts_food_key = None
 
 @st.cache_resource
 def load_model(model_path: str):
-    if not Path(model_path).exists():
-        return None
+    if not Path(model_path).exists(): return None
     return YOLO(model_path)
 
 def get_user_taste_profile(session_id):
-    # Dùng hàm chuẩn từ database
     history = food_history.get_session_history(session_id) 
-    if not history: 
-        return ["Chưa có gu 🍽️"]
-    
-    # Bổ sung thêm vị Béo vào bản đồ hương vị đồng bộ với vector đặc trưng mới
+    if not history: return ["Chưa có gu 🍽️"]
     flavor_map = {"Cay": "🌶️ Cay", "Chua": "🍋 Chua", "Ngọt": "🍬 Ngọt", "Mặn": "🧂 Mặn", "Đậm": "🥘 Đậm đà", "Béo": "🥥 Béo"}
     counts = {}
-    
     for item in history:
-        # Sử dụng item[5] (trường mon_an - DB Key không dấu) vừa lấy từ SQL để tra cứu chuẩn xác
         db_key = item[5] if len(item) > 5 else item[0]
         info = get_food_info(db_key) 
         flavors = info.get("vi_dac_trung", "") or ""
         for k, v in flavor_map.items():
-            if k in flavors: 
-                counts[v] = counts.get(v, 0) + 1
-            
+            if k in flavors: counts[v] = counts.get(v, 0) + 1
     sorted_tags = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     return [t[0] for t in sorted_tags[:3]] if sorted_tags else ["Chưa có gu 🍽️"]
 
@@ -137,18 +213,6 @@ def run_detection(model, image: Image.Image, conf: float):
     annotated = results[0].plot() if results else None
     return detections, annotated
 
-
-def crop_food_image(image: Image.Image, bbox: tuple) -> Image.Image:
-    xmin, ymin, xmax, ymax = bbox
-    w, h = image.size
-    pad = 10
-    xmin = max(0, xmin - pad)
-    ymin = max(0, ymin - pad)
-    xmax = min(w, xmax + pad)
-    ymax = min(h, ymax + pad)
-    return image.crop((xmin, ymin, xmax, ymax))
-
-
 def dedup_detections(detections: list) -> list:
     best = {}
     for d in detections:
@@ -157,15 +221,11 @@ def dedup_detections(detections: list) -> list:
             best[name] = d
     return sorted(best.values(), key=lambda x: x["confidence"], reverse=True)
 
-
 def _normalize_tts(text: str) -> str:
-    import re
     text = re.sub(r'(\d+)\s*g\b', r'\1 gam', text)
     return text
 
-
 def build_tts_text(info: dict, conf: float) -> str:
-    """Luôn sinh văn bản gốc tiếng Việt đầy đủ chỉ số để đảm bảo độ dài giọng đọc 32 giây chuẩn xác"""
     raw = " ".join([
         f"Món ăn được nhận diện là {info['ten_hien_thi']}, với độ tin cậy {conf*100:.0f} phần trăm.",
         f"Mô tả: {info['mo_ta']}",
@@ -177,103 +237,84 @@ def build_tts_text(info: dict, conf: float) -> str:
     ])
     return _normalize_tts(raw)
 
-
 async def _synthesize(text: str, voice: str, rate: str) -> bytes:
     communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
     buf = io.BytesIO()
     async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            buf.write(chunk["data"])
+        if chunk["type"] == "audio": buf.write(chunk["data"])
     buf.seek(0)
     return buf.read()
-
 
 def generate_tts(text: str, voice: str, rate: str = "-5%") -> bytes:
     try:
         return asyncio.run(_synthesize(text, voice, rate))
     except Exception:
         loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(_synthesize(text, voice, rate))
-        finally:
-            loop.close()
-
+        try: return loop.run_until_complete(_synthesize(text, voice, rate))
+        finally: loop.close()
 
 def render_tts_section(top_det: dict, voice: str, lang: str):
-    """Xử lý phát âm thanh. Tự động dịch ngầm kịch bản tiếng Việt sang tiếng Anh nếu bật English voice"""
     info = get_food_info(top_det["class_name"])
     conf = top_det["confidence"]
     tts_key = f"{top_det['class_name']}_{voice}_{lang}"
-
-    # Nhãn hộp đọc dynamically đổi theo chế độ voice
     tts_box_lbl = "🔊 Đọc to kết quả bằng Tiếng Anh — Highest Confidence Dish" if lang == "en" else "🔊 Đọc to kết quả — món có độ tin cậy cao nhất"
     tts_spin_lbl = "🎙️ Synthesizing English voice..." if lang == "en" else "🎙️ Đang tổng hợp giọng nói..."
-
-    st.markdown(
-        f"<div class='tts-section'><p class='tts-label'>{tts_box_lbl}</p></div>",
-        unsafe_allow_html=True,
-    )
-
+    st.markdown(f"<div class='tts-section'><p class='tts-label'>{tts_box_lbl}</p></div>", unsafe_allow_html=True)
     if st.session_state.tts_food_key != tts_key:
         with st.spinner(tts_spin_lbl):
             try:
                 text = build_tts_text(info, conf)
-                # Dịch ngầm kịch bản thuyết trình sang Tiếng Anh trước khi đẩy vào loa phát
                 if lang == "en":
                     from food_ai_service import ask_llm_expert
                     text = ask_llm_expert(f"Translate this comprehensive paragraph into fluent, natural spoken English for an audio tour presentation. Translate everything: {text}", top_det["class_name"], info, "en")
-                
                 audio_bytes = generate_tts(text, voice, "-5%")
                 st.session_state.tts_audio_bytes = audio_bytes
                 st.session_state.tts_food_key    = tts_key
             except Exception as e:
                 st.warning(f"⚠️ Không thể tổng hợp giọng nói lúc này. Lỗi: {e}")
                 return
-
     if st.session_state.tts_audio_bytes:
         st.audio(st.session_state.tts_audio_bytes, format="audio/mp3", autoplay=True)
 
-
 def render_one_food(det: dict):
-    """Hiển thị bảng biểu chi tiết món ăn. Mọi dữ liệu và nhãn hoàn toàn là Tiếng Việt cố định"""
     info = get_food_info(det["class_name"])
     conf = det["confidence"]
-    display_title = info['ten_hien_thi']
-
     st.markdown(
-        f"<p class='food-name'>🥗 {display_title}</p>"
+        f"<p class='food-name'>{info['ten_hien_thi']}</p>"
+        f"<span class='region-tag'>🗺️ {info.get('vung_mien', 'N/A')}</span>"
         f"<span class='conf-badge'>Độ tin cậy: {conf*100:.1f}%</span>",
         unsafe_allow_html=True,
     )
     st.progress(conf)
-
+    flavor_icon = {"Cay": "🌶️", "Chua": "🍋", "Ngọt": "🍬", "Đậm": "🧂", "Thanh": "🍃", "Béo": "🥥"}
+    raw_flavors = info.get("vi_dac_trung", "") or ""
+    flavors = [f.strip() for f in re.split(r"[,/]", raw_flavors) if f.strip()]
+    if flavors:
+        chips = "".join(f"<span class='ftag'>{flavor_icon.get(f, '•')} {f}</span>" for f in flavors)
+        st.markdown(f"<div class='flavor-tags'>{chips}</div>", unsafe_allow_html=True)
     st.markdown(
         f"<div class='calo-box'><p class='calo-label'>🔥 Lượng calo ước tính (1 khẩu phần)</p>"
         f"<p class='calo-value'>{info.get('calo', 'N/A')}</p></div>",
         unsafe_allow_html=True,
     )
-
     st.markdown(f"**📖 Mô tả chi tiết**")
     st.markdown(f"<div class='desc-box'>{info['mo_ta']}</div>", unsafe_allow_html=True)
-
     st.markdown(
         f"<div class='macro-row'>"
-        f"<span class='macro-chip'>🥩 Chất đạm: {info.get('protein','N/A')}</span>"
-        f"<span class='macro-chip'>🍚 Tinh bột: {info.get('carb','N/A')}</span>"
-        f"<span class='macro-chip'>🥑 Chất béo: {info.get('fat','N/A')}</span>"
+        f"<div class='macro-chip'><b>{info.get('protein','N/A')}</b>ĐẠM</div>"
+        f"<div class='macro-chip'><b>{info.get('carb','N/A')}</b>TINH BỘT</div>"
+        f"<div class='macro-chip'><b>{info.get('fat','N/A')}</b>CHẤT BÉO</div>"
         f"</div>", unsafe_allow_html=True,
     )
-
     rows = [
-        ("📍", "Vùng miền",         info.get("vung_mien",         "N/A")),
-        ("🍽️", "Khẩu phần",         info.get("khau_phan",         "N/A")),
-        ("🧾", "Thành phần chính",   info.get("thanh_phan",        "N/A")),
-        ("💰", "Giá tham khảo",     info.get("gia_trung_binh",    "N/A")),
-        ("⏰", "Thời điểm phù hợp", info.get("thoi_diem_phu_hop", "N/A")),
-        ("❤️", "Chỉ số sức khỏe",   info.get("chi_so_suc_khoe",   "N/A")),
-        ("💡", "Khuyến nghị",       info.get("khuyen_nghi",       "N/A")),
+        ("📍", "Vùng miền", info.get("vung_mien", "N/A")),
+        ("🍽️", "Khẩu phần", info.get("khau_phan", "N/A")),
+        ("🧾", "Thành phần", info.get("thanh_phan", "N/A")),
+        ("💰", "Giá tham khảo", info.get("gia_trung_binh", "N/A")),
+        ("⏰", "Thời điểm", info.get("thoi_diem_phu_hop", "N/A")),
+        ("❤️", "Sức khỏe", info.get("chi_so_suc_khoe", "N/A")),
+        ("💡", "Khuyến nghị", info.get("khuyen_nghi", "N/A")),
     ]
-    
     c1, c2 = st.columns(2)
     with c1:
         for icon, label, value in rows[:4]:
@@ -285,194 +326,167 @@ def render_one_food(det: dict):
 def get_recommendations(food_key: str, session_id: str, top_k: int = 3):
     similar = get_top_similar_foods(food_key, top_k=5)
     segment = get_user_segment(session_id)
-    
     current_food_info = get_food_info(food_key)
     current_region = current_food_info.get("vung_mien", "")
-
     scored = []
     for key, sim_score in similar:
         info = get_food_info(key)
-        
         m = re.search(r"\d+", info.get("calo", "0") or "0")
         calo = int(m.group()) if m else 400
-        
         A = 0.0
-        if segment == "🥗 Người ăn lành mạnh":
-            A = max(0.0, 1.0 - (calo / 800.0))
+        if segment == "🥗 Người ăn lành mạnh": A = max(0.0, 1.0 - (calo / 800.0))
         elif segment == "🌶️ Người thích ẩm thực đậm đà":
-            vi = info.get("vi_dac_trung", "")
-            if "Cay" in vi or "Đậm" in vi:
-                A = 1.0
+            if "Cay" in info.get("vi_dac_trung", "") or "Đậm" in info.get("vi_dac_trung", ""): A = 1.0
         elif segment == "🗺️ Khách khám phá đa vùng miền":
-            if info.get("vung_mien", "") != current_region:
-                A = 1.0
-
+            if info.get("vung_mien", "") != current_region: A = 1.0
         rec_score = 0.7 * sim_score + 0.3 * A
         scored.append((key, rec_score, sim_score, A))
-
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
 
-def render_detections(detections: list, voice: str, source_img: Image.Image = None, use_blip: bool = False, lang: str = "vi"):
+# ─── HÀM RENDER RIÊNG CHO TỪNG TAB ───────────────────────────────────────────
+def render_explore_tab(detections: list, voice: str, source_img: Image.Image = None, lang: str = "vi"):
     if not detections:
         st.error("❌ Không nhận diện được món ăn nào. Hãy thử ảnh rõ hơn!")
-        return
+        return None, None
 
     sorted_dets = dedup_detections(detections)
     top_det     = sorted_dets[0]
     top_info    = get_food_info(top_det["class_name"])
     session_id  = "demo_user" 
 
-    # --- LƯU LỊCH SỬ CHUẨN ---
     if "history_saved_for" not in st.session_state:
         st.session_state.history_saved_for = set()
-        
-    # Chỉ lưu khi món này là món mới so với phiên trước đó
     if top_det["class_name"] not in st.session_state.history_saved_for:
         food_history.save_detection(session_id, top_det, top_info)
         st.session_state.history_saved_for.add(top_det["class_name"])
-        st.rerun() # <--- QUAN TRỌNG: Làm mới trang để Dashboard cập nhật ngay!
-    # -------------------------
+        st.rerun() 
 
     st.markdown(
         f"<div class='top-banner'>🎯 {top_info['ten_hien_thi']} — {top_det['confidence']*100:.1f}%</div>",
         unsafe_allow_html=True,
     )
 
-    qa_tab_title = "💬 Hỏi đáp (English Q&A)" if lang == "en" else "💬 Hỏi đáp"
-    tab_info, tab_qa, tab_ai, tab_rec = st.tabs(["📊 Thông tin món ăn", qa_tab_title, "🧠 Phân tích ảnh AI", "💡 Gợi ý AI"])
-
-    with tab_info:
-        # Giữ nguyên code hiển thị thông tin cũ của bạn ở đây...
-        for i, det in enumerate(sorted_dets):
-            current_info = get_food_info(det["class_name"])
-            if i == 0:
+    for i, det in enumerate(sorted_dets):
+        current_info = get_food_info(det["class_name"])
+        if i == 0: render_one_food(det)
+        else:
+            with st.expander(f"🍽️ {current_info['ten_hien_thi']} — {det['confidence']*100:.1f}%"):
                 render_one_food(det)
-            else:
-                with st.expander(f"🍽️ {current_info['ten_hien_thi']} — {det['confidence']*100:.1f}%"):
-                    render_one_food(det)
-
-    with tab_qa:
-        render_tts_section(top_det, voice, lang)
-        caption = generate_caption(top_det["class_name"], top_info, top_det["confidence"], lang)
-        st.info(caption)
-        
-        user_question = st.text_input("Đặt câu hỏi về món ăn", key="food_question")
-        if user_question:
-            with st.spinner("🤖 Hệ thống đang xử lý..."):
-                answer, source = answer_question(user_question, top_det["class_name"], top_info, top_det["confidence"], lang)
-                st.success(f"🧠 **AI Expert:** {answer}")
-
-    with tab_ai:
-        if use_blip and source_img is not None and top_det.get("bbox"):
-            with st.spinner("🧠 BLIP-1 đang mô tả ảnh..."):
-                try:
-                    cropped = crop_food_image(source_img, top_det["bbox"])
-                    blip_caption = generate_caption_from_image(cropped)
-                    st.write(f"**AI Vision:** {blip_caption}")
-                except Exception as e:
-                    st.warning(f"⚠️ BLIP-1 gặp lỗi: {e}")
-
-    with tab_rec:
-        # --- Đảm bảo hiển thị dữ liệu mới nhất từ session_state ---
-        st.markdown("### 💠 Personal Food Dashboard")
-        history = food_history.get_session_history(session_id)
-        
-        # TỐI ƯU: Gọi hàm phân khúc 1 lần duy nhất và gán vào biến để tái sử dụng
-        segment = get_user_segment(session_id)
-        
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Tổng Calo", f"{food_history.get_total_calo(session_id)} kcal")
-        with c2: st.metric("Món đã quét", len(history))
-        with c3: 
-            st.markdown("**Phân khúc**")
-            st.write(segment)
-            
-        # --- Taste Profile Tags ---
-        st.markdown("**Gu ẩm thực của bạn:**")
-        tags = get_user_taste_profile(session_id)
-        st.markdown(f"<div class='tag-container'>{''.join([f'<span class=\"tag-chip\">{t}</span>' for t in tags])}</div>", unsafe_allow_html=True)
-        
-        st.divider()
-
-        # --- Recommendations (Main Feature) ---
-        st.markdown("### 🎯 Gợi ý AI hôm nay")
-        # SỬA LỖI: Loại bỏ dòng gọi hàm trùng lặp ở phía trên, chỉ giữ lại 1 lượt gọi duy nhất tại đây
-        recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
-        
-        for key, rec_score, sim, adj in recs:
+    st.markdown("---")
+    st.markdown("##### 🎯 Bạn có thể sẽ thích — xếp hạng theo RecScore")
+    recs = get_recommendations(food_key=top_det["class_name"], session_id=session_id)
+    rank_labels = ["#1 TOP SIMILAR", "#2 TOP SIMILAR", "#3 TOP SIMILAR"]
+    if recs:
+        ticket_cols = st.columns(len(recs), gap="medium")
+        for idx, (col, (key, rec_score, sim, adj)) in enumerate(zip(ticket_cols, recs)):
             info = get_food_info(key)
-            st.markdown(f"""
-            <div class='rec-card'>
-                <div style='display:flex; justify-content:space-between;'>
-                    <strong>{info['ten_hien_thi']}</strong>
-                    <span style='color:#f97316; font-weight:bold;'>{rec_score*100:.0f}% Match</span>
+            with col:
+                st.markdown(f"""
+                <div class='ticket'>
+                    <div class='ticket-rank'>
+                        <span>{rank_labels[idx] if idx < len(rank_labels) else f"#{idx+1}"}</span>
+                        <span class='ticket-stamp'>{rec_score*100:.0f}đ</span>
+                    </div>
+                    <h4>{info['ten_hien_thi']}</h4>
+                    <span class='sub'>Similarity {sim:.2f} · +Segment {adj:.2f}</span>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
-            st.progress(rec_score)
+                """, unsafe_allow_html=True)
+    else:
+        st.caption("Chưa có đủ dữ liệu để gợi ý món tương tự.")
+        
+    return top_det, top_info
 
-        # --- History (Hidden in Expander) ---
-        with st.expander("📜 Lịch sử khám phá chi tiết"):
-            if history:
-                # SỬA LỖI CHÍ TỬ (Crash Column Mismatch): Kỹ thuật dùng list comprehension h[:5] 
-                # Chỉ lấy đúng 5 cột hiển thị, loại bỏ cột thứ 6 (mon_an - vốn dùng làm key ẩn để sửa lỗi Gu ẩm thực)
-                clean_history = [h[:5] for h in history]
-                st.table(pd.DataFrame(clean_history, columns=["Món", "Tin cậy", "Calo", "Vùng", "Thời gian"]))
-            else:
-                st.write("Chưa có lịch sử.")
+def render_history_tab(session_id: str):
+    history = food_history.get_session_history(session_id)
+    segment = get_user_segment(session_id)
+    
+    try:
+        _, _, _, _, sil_score = user_analytics.cluster_own_history(session_id)
+    except Exception:
+        sil_score = 0
+        
+    bias = SEGMENT_CALO_BIAS.get(segment, 0)
+    segment_emoji = "🥗" if "lành mạnh" in segment else ("🌶️" if "đậm đà" in segment else ("🗺️" if "vùng miền" in segment else "🍽️"))
+    
+    # ĐỔI CÁC DÒNG CHỮ THÀNH DỄ HIỂU HƠN
+    if "Chưa đủ dữ liệu" in segment: 
+        why_text = "Hãy quét thêm món ăn (tối thiểu 3 món) để AI có thể phân tích gu ẩm thực của bạn."
+    elif "lành mạnh" in segment: 
+        why_text = "→ Ảnh hưởng Tab 1: Hệ thống sẽ ưu tiên gợi ý những món ít calo, thanh đạm hơn."
+    elif "đậm đà" in segment: 
+        why_text = "→ Ảnh hưởng Tab 1: Hệ thống sẽ ưu tiên gợi ý những món có hương vị đậm đà, cay nồng hơn."
+    else: 
+        why_text = "→ Ảnh hưởng Tab 1: Hệ thống sẽ ưu tiên gợi ý những món thuộc vùng miền mới để bạn khám phá đa dạng hơn."
 
-        # --- Logic Explanation (Cá nhân hóa lời giải thích thuật toán cho Hội đồng chấm điểm) ---
-        with st.expander("💡 Tại sao AI gợi ý các món này?"):
-            bias = SEGMENT_CALO_BIAS.get(segment, 0)
-            st.write(f"Hệ thống xác định bạn thuộc nhóm hành vi: **{segment}**.")
-            st.write("Công thức tích hợp phản hồi: RecScore = 0.7 * SimilarityScore + 0.3 * SegmentAdjustment")
-            
-            st.divider()
-            if "lành mạnh" in segment:
-                st.write("Do bạn thuộc nhóm **Ăn lành mạnh**, thuật toán tự động tính điểm phạt dựa trên lượng calo. Các món ăn càng ít calo (như Gỏi cuốn, Canh chua) sẽ được đẩy lên vị trí ưu tiên cao hơn.")
-            elif "đậm đà" in segment:
-                st.write("Do sở thích của bạn là các món **Đậm đà**, hệ thống sẽ quét sâu vào trường dữ liệu hương vị (`vi_dac_trung`) để ưu ái cộng điểm cho các món ăn có đặc trưng vị Cay hoặc Đậm vị.")
-            elif "vùng miền" in segment:
-                st.write("Do bạn là **Khách khám phá đa vùng miền**, thuật toán sẽ so sánh trường `vung_mien` và ưu tiên cộng điểm thưởng cho các món ăn thuộc vùng miền khác với món ăn hiện tại nhằm mở rộng trải nghiệm của bạn.")
-            else:
-                st.write("Hệ thống đang gợi ý dựa trên 100% độ tương đồng nội dung bản chất (Cosine Similarity) do dữ liệu phiên hiện tại của bạn chưa đạt tối thiểu 3 lượt khám phá để kích hoạt Feedback Loop phân cụm hành vi.")
+    st.markdown(f"""
+    <div class='segment-card'>
+        <div class='emoji'>{segment_emoji}</div>
+        <div>
+            <h3>{segment}</h3>
+            <p>Phân khúc xác định bằng K-Means dựa trên lịch sử khám phá trong phiên này.</p>
+            <div class='why'>{why_text}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
+    DAILY_CALO_GOAL = 2000
+    total_calo = food_history.get_total_calo(session_id)
+    pct = min(100, int(total_calo / DAILY_CALO_GOAL * 100)) if DAILY_CALO_GOAL else 0
+    st.markdown(f"**Tổng calo phiên này:** {total_calo} / {DAILY_CALO_GOAL} kcal")
+    st.progress(pct / 100)
 
+    c1, c2, c3 = st.columns(3)
+    with c1: st.metric("Món đã quét", len(history))
+    with c2: st.metric("Điều chỉnh Segment (bias)", f"{bias:+.2f}")
+    with c3: 
+        if sil_score > 0:
+            st.metric("Silhouette Score (K-Means)", f"{sil_score:.2f}")
+            st.caption("Điểm > 0 chứng minh K=3 phân cụm hợp lý")
+        else:
+            st.metric("Silhouette Score", "Chưa đủ data")
 
+    st.markdown("**Gu ẩm thực của bạn:**")
+    tags = get_user_taste_profile(session_id)
+    st.markdown(f"<div class='tag-container'>{''.join([f'<span class=\"tag-chip\">{t}</span>' for t in tags])}</div>", unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown("##### 🍽️ Món đã khám phá trong phiên")
+    if history:
+        table_html = "<table class='history-table'><thead><tr><th>Món</th><th>Tin cậy</th><th>Calo</th><th>Vùng</th><th>Thời gian</th></tr></thead><tbody>"
+        for h in history[:10]:
+            clean_h = h[:5]
+            row = f"<tr><td>{clean_h[0]}</td><td>{clean_h[1]}</td><td>{clean_h[2]}</td><td>{clean_h[3]}</td><td>{clean_h[4]}</td></tr>"
+            table_html += row
+        table_html += "</tbody></table>"
+        st.markdown(table_html, unsafe_allow_html=True)
+    else:
+        st.info("Chưa có lịch sử khám phá trong phiên này — hãy quét thêm món để mở khoá phân khúc cá nhân hoá.")
+
+    with st.expander("💡 Tại sao AI gợi ý các món ở Tab 1 như vậy?"):
+        st.markdown("`RecScore = 0.7 × SimilarityScore + 0.3 × SegmentAdjustment`")
+        st.write(f"Hệ thống xác định bạn thuộc nhóm hành vi: **{segment}**.")
+        # Bỏ cụm "→ Ảnh hưởng Tab 1: " đi để câu văn trong expander tự nhiên hơn
+        st.write(why_text.replace("→ Ảnh hưởng Tab 1: ", ""))
+
+# ─── HÀM MAIN ĐIỀU PHỐI CHÍNH ────────────────────────────────────────────────
 def main():
-    """Luồng điều khiển trung tâm chính của ứng dụng và xử lý gom nhóm scope sidebar"""
     model = load_model(MODEL_PATH)
     if model is None:
         st.error(f"❌ Không tìm thấy file model `{MODEL_PATH}`.")
         return
 
-    # ─── ĐỊNH NGHĨA TOÀN BỘ BIẾN SIDEBAR TRONG HÀM MAIN (SỬA TRIỆT ĐỂ LỖI PYLANCE) ───
     with st.sidebar:
         lang_choice = st.selectbox("🌐 Giọng đọc & Hỏi đáp", ["Tiếng Việt", "English"], index=0)
         lang = "vi" if lang_choice == "Tiếng Việt" else "en"
-        
         CONF_THRESHOLD = st.slider("🎯 Độ tin cậy tối thiểu", 0.1, 1.0, 0.35, 0.05)
         st.divider()
         
         voice_title = "**🔊 TTS Voice (English)**" if lang == "en" else "**🔊 Giọng đọc**"
         voice_options = ["en-US-AriaNeural (Female)", "en-US-GuyNeural (Male)"] if lang == "en" else ["vi-VN-HoaiMyNeural (Nữ)", "vi-VN-NamMinhNeural (Nam)"]
-        
         st.markdown(voice_title)
         voice_choice = st.radio("Voice Configuration", options=voice_options, index=0, label_visibility="collapsed")
-        
-        if lang == "vi":
-            TTS_VOICE = "vi-VN-HoaiMyNeural" if "HoaiMy" in voice_choice else "vi-VN-NamMinhNeural"
-        else:
-            TTS_VOICE = "en-US-AriaNeural" if "Aria" in voice_choice else "en-US-GuyNeural"
-            
-        st.divider()
-        st.markdown("**🧠 Phân tích ảnh thật (BLIP-1)**")
-        if blip_available():
-            use_blip = st.toggle("Bật phân tích ảnh bằng AI", value=False)
-        else:
-            st.caption("⚠️ Chưa cài transformers")
-            use_blip = False
+        TTS_VOICE = "vi-VN-HoaiMyNeural" if "HoaiMy" in voice_choice else ("vi-VN-NamMinhNeural" if "NamMinh" in voice_choice else ("en-US-AriaNeural" if "Aria" in voice_choice else "en-US-GuyNeural"))
 
         st.divider()
         st.markdown("**✨ Tính năng**")
@@ -480,48 +494,89 @@ def main():
         st.divider()
         st.caption("Demo MVP • Team AI Food Assistant © 2026")
 
-    # Vẽ bố cục tiêu đề đầu trang cố định tiếng Việt
-    col_logo, col_title = st.columns([1, 5])
-    with col_logo:
-        st.image("https://cdn-icons-png.flaticon.com/512/2921/2921822.png", width=100)
-    with col_title:
-        st.markdown("<div class='main-title'>Food AI Assistant</div>", unsafe_allow_html=True)
-        st.markdown("<div class='subtitle'>Nhận diện · Tính calo · Mô tả · Gợi ý · Hỏi đáp về món ăn Việt Nam bằng AI</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>🍜 Food AI Assistant</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>Nhận diện · Tính calo · Gợi ý theo RecScore · Hỏi đáp về món ăn Việt Nam bằng AI</div>", unsafe_allow_html=True)
     st.divider()
 
-    # Phân tách bố cục cột Trái (Ảnh đầu vào) - Phải (Kết quả phân tích)
-    left, right = st.columns([1, 1.12], gap="large")
+    left, right = st.columns([1, 2.3], gap="large")
 
     with left:
-        st.markdown("### 📤 Đầu vào ảnh")
-        tab_upload, tab_cam = st.tabs(["📁 Upload / Kéo thả", "📸 Camera trực tiếp"])
-        source_img = None
-        with tab_upload:
-            uploaded = st.file_uploader("Chọn hoặc kéo thả ảnh món ăn vào đây", type=["jpg", "jpeg", "png"], key="upload")
-            if uploaded:
-                source_img = Image.open(uploaded).convert("RGB")
-        with tab_cam:
-            cam = st.camera_input("Chụp món ăn ngay", key="camera")
-            if cam:
-                source_img = Image.open(cam).convert("RGB") # Sửa hàm open chuẩn xác
-        if source_img:
-            st.image(source_img, width='stretch')
-            st.caption("Ảnh gốc")
+        with st.container(border=True):
+            st.markdown("### 📤 Đầu vào ảnh")
+            tab_upload, tab_cam = st.tabs(["📁 Upload / Kéo thả", "📸 Camera trực tiếp"])
+            source_img = None
+            with tab_upload:
+                uploaded = st.file_uploader("Chọn hoặc kéo thả ảnh món ăn vào đây", type=["jpg", "jpeg", "png"], key="upload")
+                if uploaded: source_img = Image.open(uploaded).convert("RGB")
+            with tab_cam:
+                cam = st.camera_input("Chụp món ăn ngay", key="camera")
+                if cam: source_img = Image.open(cam).convert("RGB") 
+            if source_img:
+                st.image(source_img, use_container_width=True)
+                st.caption("Ảnh gốc")
+            else:
+                st.info("Chưa có ảnh — hãy upload hoặc bật camera để bắt đầu.")
 
     with right:
         st.markdown("### 📊 Kết quả nhận diện")
+        
+        qa_tab_title = "💬 Hỏi đáp AI (English Q&A)" if lang == "en" else "💬 Hỏi đáp AI"
+        tab_explore, tab_qa, tab_history = st.tabs(["📊 Thông tin & Khám phá", qa_tab_title, "🗂️ Lịch sử Khám phá"])
+
+        session_id = "demo_user"
+        top_det = None
+        top_info = None
+
+        # TAB 3 LUÔN ĐƯỢC RENDER DÙ CHƯA CÓ ẢNH
+        with tab_history:
+            render_history_tab(session_id)
+
+        # KIỂM TRA ẢNH ĐỂ RENDER TAB 1 VÀ 2
         if source_img is not None:
             with st.spinner("🤖 AI đang phân tích món ăn..."):
                 t0 = time.time()
                 detections, annotated = run_detection(model, source_img, CONF_THRESHOLD)
                 elapsed = time.time() - t0
-            if annotated is not None:
-                # annotated = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                st.image(annotated, channels="BGR", width='stretch')
-                st.caption(f"✅ Xử lý xong trong {elapsed:.2f}s — phát hiện {len(detections)} đối tượng")
-            render_detections(detections, TTS_VOICE, source_img, use_blip, lang)
+            
+            with tab_explore:
+                if not detections:
+                    st.error("❌ Không nhận diện được món ăn nào. Hãy thử ảnh rõ hơn!")
+                else:
+                    if annotated is not None:
+                        st.image(annotated, channels="BGR", use_container_width=True)
+                        st.caption(f"✅ Xử lý xong trong {elapsed:.2f}s — phát hiện {len(detections)} đối tượng")
+                    top_det, top_info = render_explore_tab(detections, TTS_VOICE, source_img, lang)
+
+            with tab_qa:
+                if not top_det:
+                    st.info("❌ Chưa nhận diện được món ăn để hỏi đáp.")
+                else:
+                    render_tts_section(top_det, TTS_VOICE, lang)
+                    caption = generate_caption(top_det["class_name"], top_info, top_det["confidence"], lang)
+                    st.info(caption)
+                    st.markdown("<p class='suggest-chip-hint'>Câu hỏi gợi ý:</p>", unsafe_allow_html=True)
+                    suggested_questions = [f"{top_info['ten_hien_thi']} bao nhiêu calo?", "Ăn kèm rau gì cho đúng chuẩn?", "So sánh với món tương tự"]
+                    chip_cols = st.columns(len(suggested_questions))
+                    clicked_question = None
+                    for col, q in zip(chip_cols, suggested_questions):
+                        with col:
+                            if st.button(q, key=f"chip_{q}", use_container_width=True):
+                                clicked_question = q
+                    if "chat_thread" not in st.session_state: st.session_state.chat_thread = []
+                    user_question = st.text_input("Hoặc tự đặt câu hỏi khác", key="food_question")
+                    final_question = clicked_question or (user_question if user_question else None)
+                    if final_question:
+                        with st.spinner("🤖 Hệ thống đang xử lý..."):
+                            answer, source = answer_question(final_question, top_det["class_name"], top_info, top_det["confidence"], lang)
+                            st.session_state.chat_thread.append((final_question, answer, source))
+                    for q, a, source in st.session_state.chat_thread[-5:]:
+                        st.markdown(f"**🧑 {q}**")
+                        st.markdown(f"<div class='bubble-ai'><span class='src'>AI · {source}</span><br>{a}</div>", unsafe_allow_html=True)
         else:
-            st.info("⬅️ Hãy upload ảnh hoặc bật camera bên trái để bắt đầu.")
+            with tab_explore:
+                st.info("⬅️ Hãy upload ảnh hoặc bật camera bên trái để bắt đầu nhận diện.")
+            with tab_qa:
+                st.info("⬅️ Hãy nhận diện món ăn để bắt đầu hỏi đáp.")
 
 if __name__ == "__main__":
     main()
