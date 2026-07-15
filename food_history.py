@@ -2,30 +2,7 @@
 food_history.py
 ----------------
 Discovery History — SQLite. KHÔNG phải AI, chỉ là hạ tầng lưu trữ cần thiết
-để user_analytics.py (K-Means) có dữ liệu đầu vào. Đúng interface đã thống
-nhất trong FOOD_AI_CONTEXT.md mục 6.3.
-
-Interface:
-    init_db()
-    save_detection(session_id, det, info)
-    get_session_history(session_id)
-    get_total_calo(session_id)
-    get_session_detection_count(session_id)   # thêm mới — xem ghi chú bên dưới
-
-`det` là dict kết quả 1 detection từ YOLOv8s, tối thiểu cần key "class_name"
-và "confidence" (đúng field app.py hiện đang dùng).
-`info` là dict trả về từ food_info.get_food_info(), tối thiểu cần
-"ten_hien_thi", "calo", "vung_mien".
-
-GHI CHÚ FIX theo checklist kiểm thử (P5, cuối PHAN_CONG_3_NGAY.md):
-    "Tab 3: với session mới (chưa có lịch sử) -> hiển thị đúng thông báo
-    'chưa đủ dữ liệu'" và "session có >= 3 lần khám phá -> phân khúc hiển
-    thị đúng". Bản pseudocode gốc trong context file (mục 6.4) không có
-    hàm đếm số lượt của RIÊNG 1 session, nên user_analytics.get_user_segment()
-    không thể phân biệt "session mới có 1 lượt" với "session đã dùng nhiều
-    lần" — nó sẽ gán segment cho bất kỳ session nào miễn tổng số session
-    trong DB >= 3. Hàm get_session_detection_count() dưới đây được thêm để
-    user_analytics.py dùng làm điều kiện chặn trước khi gán segment.
+để user_analytics.py (K-Means) có dữ liệu đầu vào.
 """
 
 import re
@@ -117,9 +94,17 @@ def get_session_detection_count(session_id: str, db_path: str = DB_PATH) -> int:
     conn.close()
     return result[0] or 0
 
+# ─── HÀM MỚI THÊM ĐỂ HỖ TRỢ NÚT XÓA DỮ LIỆU ─────────────────────────────────
+def clear_session_history(session_id: str, db_path: str = DB_PATH) -> None:
+    """Xóa toàn bộ lịch sử của 1 session (dùng khi người dùng bấm Reset)."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM history WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
 
 if __name__ == "__main__":
-    # Test tạo DB, insert giả lập, query lại đúng (P3, deliverable Ngày 1)
     init_db()
     fake_det = {"class_name": "Pho_Bo", "confidence": 0.91}
     fake_info = {"ten_hien_thi": "Phở Bò", "calo": "350 kcal / tô", "vung_mien": "Miền Bắc"}

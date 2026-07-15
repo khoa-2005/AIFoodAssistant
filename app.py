@@ -21,6 +21,7 @@ if sys.platform == "win32":
 import edge_tts
 import numpy as np
 import streamlit as st
+import plotly.graph_objects as go # Thư viện vẽ Radar chart
 from PIL import Image
 from ultralytics import YOLO
 
@@ -29,7 +30,7 @@ import user_analytics
 from food_info import get_food_info
 from food_reasoner import generate_caption, answer_question
 from food_similarity import get_top_similar_foods
-from food_history import save_detection
+from food_history import save_detection, clear_session_history # Import thêm clear_session_history
 from user_analytics import get_user_segment
 
 import pandas as pd
@@ -51,7 +52,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── CẤU HÌNH CSS GIAO DIỆN TỐI ƯU ──────────────────────────────────────────
+# ─── CẤU HÌNH CSS GIAO DIỆN TỐI ƯU (GIỮ NGUYÊN THEME GỐC) ──────────────────
 st.markdown("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -63,17 +64,14 @@ st.markdown("""
     }
     html, body, [class*="css"]  { font-family: 'Be Vietnam Pro', sans-serif; }
 
-    /* Nền tổng thể */
     [data-testid="stAppViewContainer"], [data-testid="stMain"], .main { background: var(--leaf) !important; }
     [data-testid="stHeader"] { background: transparent !important; }
     [data-testid="stSidebar"] { background: var(--leaf-2) !important; border-right: 1px solid #3C5B4A; }
     [data-testid="stSidebar"] * { color: var(--paper) !important; }
     
-    /* Đổi màu chữ mặc định trên nền dark */
     .stMarkdown, [data-testid="stMarkdownContainer"] p, label, .stCaption { color: var(--paper); }
     [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color: var(--paper) !important; }
 
-    /* Card bọc container */
     [data-testid="stVerticalBlockBorderWrapper"] { 
         background: var(--leaf-2) !important; 
         border: 1px solid #3C5B4A !important; 
@@ -82,13 +80,11 @@ st.markdown("""
     }
     [data-testid="stVerticalBlockBorderWrapper"] h3, [data-testid="stVerticalBlockBorderWrapper"] p { color: var(--paper) !important; }
 
-    /* Tab */
     button[data-baseweb="tab"] { color: #C9D8CC !important; font-weight: 600; }
     button[data-baseweb="tab"][aria-selected="true"] { color: var(--turmeric) !important; }
     [data-baseweb="tab-highlight"] { background-color: var(--turmeric) !important; }
     [data-baseweb="tab-border"] { background-color: #3C5B4A !important; }
 
-    /* Định dạng thành phần Native của Streamlit */
     .stButton > button {
         background-color: var(--leaf-2); color: var(--paper) !important;
         border: 1px solid var(--herb); border-radius: 8px; transition: all 0.2s;
@@ -119,13 +115,11 @@ st.markdown("""
     }
     [data-testid="stFileUploaderDropzone"] p, [data-testid="stFileUploaderDropzone"] small, [data-testid="stFileUploaderDropzone"] svg { color: #C9D8CC !important; fill: #C9D8CC !important; }
 
-    /* Bảng dữ liệu History (HTML table) */
     .history-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
     .history-table th { background-color: var(--leaf-2); color: var(--turmeric); padding: 10px; text-align: left; border-bottom: 2px solid var(--herb); }
     .history-table td { background-color: var(--paper-2); color: var(--ink); padding: 10px; border-bottom: 1px solid var(--line); }
     .history-table tr:hover td { background-color: #E8F0E4; }
 
-    /* Typography & Custom Classes */
     .main-title { font-size: 2.6rem; font-weight: 800; color: var(--paper); text-align: center; margin-bottom: 0.1rem; }
     .subtitle { text-align: center; color: #C9D8CC; font-size: 1.05rem; font-weight: 500; margin-bottom: 1rem; }
     .top-banner { background: var(--leaf-2); border: 1px solid #3C5B4A; border-radius: 14px; padding: 14px 22px; margin-bottom: 18px; font-weight: 700; color: var(--turmeric); font-size: 1.05rem; }
@@ -183,19 +177,25 @@ def load_model(model_path: str):
     if not Path(model_path).exists(): return None
     return YOLO(model_path)
 
+# ─── SỬA LẠI HÀM NÀY ĐỂ TRẢ VỀ CẢ COUNTS PHỤC VỤ VẼ RADAR CHART ───────────────
 def get_user_taste_profile(session_id):
     history = food_history.get_session_history(session_id) 
-    if not history: return ["Chưa có gu 🍽️"]
-    flavor_map = {"Cay": "🌶️ Cay", "Chua": "🍋 Chua", "Ngọt": "🍬 Ngọt", "Mặn": "🧂 Mặn", "Đậm": "🥘 Đậm đà", "Béo": "🥥 Béo"}
+    if not history: 
+        return ["Chưa có gu 🍽️"], {}
+        
+    flavor_map = {"Cay": "Cay", "Chua": "Chua", "Ngọt": "Ngọt", "Mặn": "Mặn", "Đậm": "Đậm đà", "Béo": "Béo"}
     counts = {}
     for item in history:
         db_key = item[5] if len(item) > 5 else item[0]
         info = get_food_info(db_key) 
         flavors = info.get("vi_dac_trung", "") or ""
         for k, v in flavor_map.items():
-            if k in flavors: counts[v] = counts.get(v, 0) + 1
+            if k in flavors: 
+                counts[v] = counts.get(v, 0) + 1
+                
     sorted_tags = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    return [t[0] for t in sorted_tags[:3]] if sorted_tags else ["Chưa có gu 🍽️"]
+    tags_list = [t[0] for t in sorted_tags[:3]] if sorted_tags else ["Chưa có gu 🍽️"]
+    return tags_list, counts
 
 def run_detection(model, image: Image.Image, conf: float):
     results = model.predict(source=np.array(image), conf=conf, verbose=False)
@@ -397,6 +397,7 @@ def render_explore_tab(detections: list, voice: str, source_img: Image.Image = N
         
     return top_det, top_info
 
+# ─── HÀM RENDER HISTORY TAB (CÓ TÍCH HỢP RADAR CHART) ────────────────────────
 def render_history_tab(session_id: str):
     history = food_history.get_session_history(session_id)
     segment = get_user_segment(session_id)
@@ -409,7 +410,6 @@ def render_history_tab(session_id: str):
     bias = SEGMENT_CALO_BIAS.get(segment, 0)
     segment_emoji = "🥗" if "lành mạnh" in segment else ("🌶️" if "đậm đà" in segment else ("🗺️" if "vùng miền" in segment else "🍽️"))
     
-    # ĐỔI CÁC DÒNG CHỮ THÀNH DỄ HIỂU HƠN
     if "Chưa đủ dữ liệu" in segment: 
         why_text = "Hãy quét thêm món ăn (tối thiểu 3 món) để AI có thể phân tích gu ẩm thực của bạn."
     elif "lành mạnh" in segment: 
@@ -446,9 +446,41 @@ def render_history_tab(session_id: str):
         else:
             st.metric("Silhouette Score", "Chưa đủ data")
 
+    # ─── PHẦN RADAR CHART & TAGS (SỬA LẠI) ───────────────────────────────────
     st.markdown("**Gu ẩm thực của bạn:**")
-    tags = get_user_taste_profile(session_id)
-    st.markdown(f"<div class='tag-container'>{''.join([f'<span class=\"tag-chip\">{t}</span>' for t in tags])}</div>", unsafe_allow_html=True)
+    tags, flavor_counts = get_user_taste_profile(session_id)
+    
+    c_chart, c_tags = st.columns([1.5, 1])
+    
+    with c_chart:
+        if flavor_counts:
+            # Danh sách các vị cố định để trục radar luôn cân đối
+            categories = ['Cay', 'Chua', 'Ngọt', 'Mặn', 'Đậm đà', 'Béo']
+            values = [flavor_counts.get(cat, 0) for cat in categories]
+            
+            fig = go.Figure(data=go.Scatterpolar(
+                r=values,
+                theta=categories,
+                fill='toself',
+                fillcolor='rgba(227, 164, 56, 0.4)', # Màu turmeric trong suối
+                line=dict(color='#E3A438', width=2)
+            ))
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, range=[0, max(values) + 1 if values else 1], tickfont=dict(color="#FBF4E4")),
+                    angularaxis=dict(tickfont=dict(color="#FBF4E4", size=11))
+                ),
+                showlegend=False,
+                paper_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=280
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Chưa có dữ liệu để vẽ biểu đồ gu.")
+            
+    with c_tags:
+        st.markdown(f"<div class='tag-container'>{''.join([f'<span class=\"tag-chip\">{t}</span>' for t in tags])}</div>", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("##### 🍽️ Món đã khám phá trong phiên")
@@ -466,7 +498,6 @@ def render_history_tab(session_id: str):
     with st.expander("💡 Tại sao AI gợi ý các món ở Tab 1 như vậy?"):
         st.markdown("`RecScore = 0.7 × SimilarityScore + 0.3 × SegmentAdjustment`")
         st.write(f"Hệ thống xác định bạn thuộc nhóm hành vi: **{segment}**.")
-        # Bỏ cụm "→ Ảnh hưởng Tab 1: " đi để câu văn trong expander tự nhiên hơn
         st.write(why_text.replace("→ Ảnh hưởng Tab 1: ", ""))
 
 # ─── HÀM MAIN ĐIỀU PHỐI CHÍNH ────────────────────────────────────────────────
@@ -491,6 +522,18 @@ def main():
         st.divider()
         st.markdown("**✨ Tính năng**")
         st.markdown("• Nhận diện nhiều món\n• Tính calo & macro\n• Mô tả chi tiết\n• Vùng miền, giá, thời điểm\n• Gợi ý món tương tự\n• 🔊 Đọc to tự động\n• 💬 Hỏi đáp về món ăn")
+        
+        # ─── MODULE QUẢN LÝ DỮ LIỆU (NÚT XÓA) ────────────────────────────────
+        st.divider()
+        st.markdown("**🛠️ Quản lý dữ liệu**")
+        if st.button("🗑️ Xoá dữ liệu gu ăn uống", use_container_width=True):
+            food_history.clear_session_history("demo_user")
+            # Xóa các state liên quan để refresh hoàn toàn
+            if "history_saved_for" in st.session_state:
+                st.session_state.history_saved_for.clear()
+            st.toast("Đã xoá toàn bộ lịch sử khám phá!", icon="✅")
+            st.rerun()
+
         st.divider()
         st.caption("Demo MVP • Team AI Food Assistant © 2026")
 
@@ -527,11 +570,9 @@ def main():
         top_det = None
         top_info = None
 
-        # TAB 3 LUÔN ĐƯỢC RENDER DÙ CHƯA CÓ ẢNH
         with tab_history:
             render_history_tab(session_id)
 
-        # KIỂM TRA ẢNH ĐỂ RENDER TAB 1 VÀ 2
         if source_img is not None:
             with st.spinner("🤖 AI đang phân tích món ăn..."):
                 t0 = time.time()
